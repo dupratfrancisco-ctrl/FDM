@@ -392,7 +392,7 @@ const dayIn = (mk, day) => { const [y, m] = mk.split("-").map(Number); return `$
 function projection(cur) {
   const today = todayISO(), now = monthKey(today);
   const mine = db.planned.filter(p => p.currency === cur);
-  let last = addMonths(now, 2);
+  let last = addMonths(now, 3);
   for (const p of mine) if (p.due && monthKey(p.due) > last) last = monthKey(p.due);
   if (last > addMonths(now, 12)) last = addMonths(now, 12);
   const occ = [];
@@ -401,7 +401,9 @@ function projection(cur) {
     const day = +(p.due || today).slice(8);
     let mk = first ? monthKey(first) : now;
     for (let i = 0; mk <= last; i++, mk = addMonths(mk, 1)) {
-      occ.push({ p, mk, next: i > 0, date: i === 0 ? first : dayIn(mk, day), amount: isIn(p) ? p.amount : -p.amount });
+      // Un mes puede tener su propio monto o día, o no ir ese mes
+      const ov = p.monthly && p.over?.[mk];
+      if (!ov?.skip) occ.push({ p, mk, next: i > 0, changed: !!ov, date: ov?.day ? dayIn(mk, ov.day) : i === 0 ? first : dayIn(mk, day), amount: (isIn(p) ? 1 : -1) * (ov?.amount ?? p.amount) });
       if (!p.monthly) break;
     }
   }
@@ -426,11 +428,10 @@ function projection(cur) {
   return months;
 }
 function occRow(o) {
-  const p = o.p, late = !o.next && p.due && p.due < todayISO();
-  const date = o.next ? o.date : p.due;
+  const p = o.p, date = o.date || (o.next ? null : p.due), late = !o.next && date && date < todayISO();
   const when = date ? `<span class="tag ${late ? "late" : isIn(p) ? "done" : ""}">${late ? "vencido " : ""}${shortDate(date)}</span>` : "";
   const left = db.accounts.length && o.mk === monthKey(todayISO()) ? `<span style="color:${o.left < 0 ? "var(--red)" : "var(--green)"};font-weight:600">${o.left < 0 ? "te faltan " + money(-o.left, p.currency) : "te quedan " + money(o.left, p.currency)}</span> · ` : "";
-  return `<button class="item" data-plan="${p.id}"><span class="t">${esc(p.desc)}${when}</span><span class="a num ${isIn(p) ? "in" : "plan"}">${isIn(p) ? "+ " : "− "}${money(p.amount, p.currency)}</span><span class="s">${left}${isIn(p) ? "cobro" : esc(p.cat)}${p.monthly ? " · todos los meses" : ""}</span></button>`;
+  return `<button class="item" data-plan="${p.id}" data-mk="${o.mk}"><span class="t">${esc(p.desc)}${when}</span><span class="a num ${isIn(p) ? "in" : "plan"}">${isIn(p) ? "+ " : "− "}${money(Math.abs(o.amount), p.currency)}</span><span class="s">${left}${isIn(p) ? "cobro" : esc(p.cat)}${o.changed ? " · cambiado este mes" : p.monthly ? " · todos los meses" : ""}</span></button>`;
 }
 const doneRow = t => `<button class="item" data-tx="${t.id}"><span class="t">${esc(t.desc)} <span class="tag done">✓ ${t.amount > 0 ? "cobrado" : "pagado"} el ${shortDate(t.date)}</span></span><span class="a num ${t.amount > 0 ? "in" : "out"}">${t.amount > 0 ? "+ " : "− "}${money(Math.abs(t.amount), curOf(t))}</span><span class="s">${esc(t.cat)} · ya está en tu saldo</span></button>`;
 function monthCard(m, cur, multi, first) {
@@ -638,7 +639,8 @@ function formPlan(p, preset = {}) {
   const v = p || preset;
   let kind = v.kind === "in" ? "in" : "out";
   const curs = [...new Set(db.accounts.map(a => a.currency).concat("ARS", "USD"))];
-  openSheet(`<h2>${isNew ? "Para más adelante" : "Editar"}</h2>
+  openSheet(`<h2>${isNew ? "Para más adelante" : p.monthly ? "Editar todos los meses" : "Editar"}</h2>
+    ${!isNew && p.monthly ? `<p class="muted small">Cambia todos los meses, menos los que cambiaste aparte.</p>` : ""}
     <div class="seg" id="fKind"><button data-k="out">Voy a pagar</button><button data-k="in">Voy a cobrar</button></div>
     <label class="field"><span class="label">Qué es</span><input type="text" id="fDesc" placeholder="Alquiler, sueldo, service del auto…" value="${esc(v.desc || "")}" maxlength="80"></label>
     <div class="row">
@@ -696,13 +698,54 @@ function formPlan(p, preset = {}) {
   });
 }
 
-function formPay(p) {
+const monthTitle = mk => { const n = MONTHS[+mk.slice(5) - 1]; return n[0].toUpperCase() + n.slice(1); };
+function formMonth(p, mk) {
+  const occ = projection(p.currency).flatMap(m => m.items).filter(o => o.p === p);
+  const o = occ.find(x => x.mk === mk);
+  if (!o) return formPlan(p);
+  const mes = monthTitle(mk), inc = isIn(p), ov = p.over?.[mk];
+  const day = o.date ? +o.date.slice(8) : +(p.due || todayISO()).slice(8);
+  openSheet(`<h2>${esc(p.desc)} · ${mes}</h2>
+    <p class="muted small">Se repite todos los meses. Lo que cambies acá es <b>solo para ${mes.toLowerCase()}</b>; los demás meses quedan igual.</p>
+    <div class="row">
+      <label class="field"><span class="label">Monto de ${mes.toLowerCase()}</span><input type="text" inputmode="decimal" id="fAmt" value="${new Intl.NumberFormat("es-AR", { maximumFractionDigits: 2 }).format(Math.abs(o.amount))}"></label>
+      <label class="field" style="flex:0 1 120px"><span class="label">Día</span><input type="number" inputmode="numeric" min="1" max="31" id="fDay" value="${day}"></label>
+    </div>
+    <p class="err" id="fErr" hidden></p>
+    <button class="btn" id="fOk">Guardar para ${mes.toLowerCase()}</button>
+    ${occ[0] === o ? `<button class="btn" id="fPaid" style="background:var(--green)">${inc ? "Ya lo cobré" : "Ya lo pagué"}</button>` : ""}
+    <div class="row"><button class="btn ghost small" id="fAll">Cambiar todos los meses</button><button class="btn ghost small" id="fSkip">No va en ${mes.toLowerCase()}</button></div>
+    ${ov ? `<button class="btn ghost small" id="fReset">Volver a lo de todos los meses (${money(p.amount, p.currency)})</button>` : ""}
+    <button class="btn ghost" data-close>Cancelar</button>`, b => {
+    const read = () => {
+      const amt = parseAmount(b.querySelector("#fAmt").value), d = +b.querySelector("#fDay").value, err = b.querySelector("#fErr");
+      if (isNaN(amt) || amt <= 0) { err.textContent = "Poné un monto"; err.hidden = false; return null; }
+      if (!Number.isInteger(d) || d < 1 || d > 31) { err.textContent = "El día tiene que ser de 1 a 31"; err.hidden = false; return null; }
+      return { amt: Math.abs(amt), d };
+    };
+    b.querySelector("#fOk").onclick = () => {
+      const r = read(); if (!r) return;
+      p.over = p.over || {};
+      if (r.amt === p.amount && r.d === +(p.due || todayISO()).slice(8)) delete p.over[mk];
+      else p.over[mk] = { amount: r.amt, day: r.d };
+      save(); closeSheet(); render(); toast(`Cambiado solo para ${mes.toLowerCase()}`);
+    };
+    const paid = b.querySelector("#fPaid");
+    if (paid) paid.onclick = () => { const r = read(); if (r) formPay(p, mk, r.amt); };
+    b.querySelector("#fAll").onclick = () => formPlan(p);
+    b.querySelector("#fSkip").onclick = () => { p.over = p.over || {}; p.over[mk] = { skip: true }; save(); closeSheet(); render(); toast(`Sacado de ${mes.toLowerCase()}`); };
+    const reset = b.querySelector("#fReset");
+    if (reset) reset.onclick = () => { delete p.over[mk]; save(); closeSheet(); render(); toast("Como todos los meses"); };
+  });
+}
+
+function formPay(p, mk, amount) {
   const options = db.accounts.filter(a => a.currency === p.currency);
   if (!options.length) { toast(`No tenés cuentas en ${p.currency}`); return; }
   const inc = isIn(p);
   openSheet(`<h2>${inc ? "Cobrar" : "Pagar"}: ${esc(p.desc)}</h2>
     <p class="muted small">Pasa a tus movimientos y ${inc ? "se suma a" : "se descuenta de"} la cuenta.${p.monthly ? " Como se repite, queda para el mes que viene." : ""}</p>
-    <label class="field"><span class="label">Monto ${inc ? "cobrado" : "pagado"}</span><input type="text" inputmode="decimal" id="fAmt" value="${String(p.amount).replace(".", ",")}"></label>
+    <label class="field"><span class="label">Monto ${inc ? "cobrado" : "pagado"}</span><input type="text" inputmode="decimal" id="fAmt" value="${new Intl.NumberFormat("es-AR", { maximumFractionDigits: 2 }).format(amount ?? p.amount)}"></label>
     <div class="row">
       <label class="field"><span class="label">Cuenta</span><select id="fAcct">${options.map(a => `<option value="${a.id}" ${a.id === p.accountId ? "selected" : ""}>${esc(a.name)}</option>`).join("")}</select></label>
       <label class="field"><span class="label">Fecha</span><input type="date" id="fDate" value="${todayISO()}"></label>
@@ -714,11 +757,10 @@ function formPay(p) {
       if (isNaN(amt) || amt <= 0) { const e = b.querySelector("#fErr"); e.textContent = "Poné un monto"; e.hidden = false; return; }
       db.txs.push({ id: uid(), created: Date.now(), src: "planned", plannedId: p.id, accountId: b.querySelector("#fAcct").value, amount: inc ? amt : -amt, desc: p.desc, cat: p.cat, date: b.querySelector("#fDate").value || todayISO() });
       if (p.monthly) {
-        const base = new Date((p.due || todayISO()) + "T12:00");
-        const day = base.getDate();
-        base.setDate(1); base.setMonth(base.getMonth() + 1);
-        base.setDate(Math.min(day, new Date(base.getFullYear(), base.getMonth() + 1, 0).getDate()));
-        p.due = base.toISOString().slice(0, 10);
+        // Queda para el mes siguiente al que se cobró o pagó, el día de siempre
+        const from = mk || monthKey(p.due || todayISO());
+        p.due = dayIn(addMonths(from, 1), +(p.due || todayISO()).slice(8));
+        if (p.over) for (const k of Object.keys(p.over)) if (k <= from) delete p.over[k];
       } else db.planned = db.planned.filter(x => x !== p);
       save(); closeSheet(); render(); toast(inc ? "Cobrado y anotado" : "Pagado y anotado en Gastos");
     };
@@ -1083,7 +1125,7 @@ document.addEventListener("click", e => {
   else if (d.goto) { tab = d.goto; render(); scrollTo(0, 0); }
   else if ("close" in d) closeSheet();
   else if (d.tx) formTx(db.txs.find(t => t.id === d.tx));
-  else if (d.plan) formPlan(db.planned.find(p => p.id === d.plan));
+  else if (d.plan) { const p = db.planned.find(p => p.id === d.plan); if (p) p.monthly && d.mk ? formMonth(p, d.mk) : formPlan(p); }
   else if (d.import) formImport(acctById(d.import));
   else if (d.adjust) formAdjust(acctById(d.adjust));
   else if (d.editacct) formAccount(acctById(d.editacct));
