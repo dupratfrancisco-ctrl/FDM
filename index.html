@@ -291,7 +291,7 @@ function viewInicio() {
       `</div></section>`;
   }
 
-  const next = currencies().flatMap(cur => projection(cur).slice(0, 2).flatMap(m => m.items)).slice(0, 5);
+  const next = currencies().flatMap(cur => projection(cur).slice(0, 2).flatMap(m => m.items.filter(o => !o.skip))).slice(0, 5);
   if (next.length) {
     html += `<section class="card"><div class="cardhead"><h2>Lo que viene</h2><button class="btn ghost small" data-goto="planeados">Mes por mes</button></div><div class="list">${next.map(occRow).join("")}</div></section>`;
   }
@@ -403,7 +403,7 @@ function projection(cur) {
     for (let i = 0; mk <= last; i++, mk = addMonths(mk, 1)) {
       // Un mes puede tener su propio monto o día, o no ir ese mes
       const ov = p.monthly && p.over?.[mk];
-      if (!ov?.skip) occ.push({ p, mk, next: i > 0, changed: !!ov, date: ov?.day ? dayIn(mk, ov.day) : i === 0 ? first : dayIn(mk, day), amount: (isIn(p) ? 1 : -1) * (ov?.amount ?? p.amount) });
+      occ.push({ p, mk, next: i > 0, skip: !!ov?.skip, changed: !!ov, date: ov?.day ? dayIn(mk, ov.day) : i === 0 ? first : dayIn(mk, day), amount: (isIn(p) ? 1 : -1) * (ov?.amount ?? p.amount) });
       if (!p.monthly) break;
     }
   }
@@ -418,6 +418,8 @@ function projection(cur) {
     if (mk === now) m.done = db.txs.filter(t => t.src === "planned" && monthKey(t.date) === now && curOf(t) === cur).sort((a, b) => a.date.localeCompare(b.date));
     for (const o of occ) {
       if (o.mk !== mk) continue;
+      // Lo sacado de este mes se sigue viendo para poder ponerle un monto, pero no suma
+      if (o.skip) { m.items.push({ ...o, left: run }); continue; }
       run = round2(run + o.amount);
       if (o.amount > 0) m.inn += o.amount; else m.out -= o.amount;
       m.items.push({ ...o, left: run });
@@ -428,6 +430,7 @@ function projection(cur) {
   return months;
 }
 function occRow(o) {
+  if (o.skip) return `<button class="item" data-plan="${o.p.id}" data-mk="${o.mk}" style="opacity:.6"><span class="t">${esc(o.p.desc)}<span class="tag">no va este mes</span></span><span class="a num">—</span><span class="s">Tocá para ponerle un monto</span></button>`;
   const p = o.p, date = o.date || (o.next ? null : p.due), late = !o.next && date && date < todayISO();
   const when = date ? `<span class="tag ${late ? "late" : isIn(p) ? "done" : ""}">${late ? "vencido " : ""}${shortDate(date)}</span>` : "";
   const left = db.accounts.length && o.mk === monthKey(todayISO()) ? `<span style="color:${o.left < 0 ? "var(--red)" : "var(--green)"};font-weight:600">${o.left < 0 ? "te faltan " + money(-o.left, p.currency) : "te quedan " + money(o.left, p.currency)}</span> · ` : "";
@@ -447,7 +450,8 @@ function monthCard(m, cur, multi, first) {
   return `<section class="card"><h2>${name[0].toUpperCase() + name.slice(1)}${multi ? " · " + cur : ""}</h2>
     <div class="msum">${sum}</div>
     ${first ? "" : `<p class="muted small">Más lo que te sobre de ${prev}.</p>`}
-    ${m.items.length || m.done.length ? `<div class="list">${m.done.map(doneRow).join("")}${m.items.map(occRow).join("")}</div>` : `<p class="muted small">Nada anotado para este mes.</p>`}</section>`;
+    ${m.items.length || m.done.length ? `<div class="list">${m.done.map(doneRow).join("")}${m.items.map(occRow).join("")}</div>` : `<p class="muted small">Nada anotado para este mes.</p>`}
+    <button class="btn ghost small" data-addmonth="${m.mk}">+ Agregar a ${MONTHS[+m.mk.slice(5) - 1]}</button></section>`;
 }
 function viewPlaneados() {
   const curs = currencies().filter(c => db.planned.some(p => p.currency === c));
@@ -700,21 +704,21 @@ function formPlan(p, preset = {}) {
 
 const monthTitle = mk => { const n = MONTHS[+mk.slice(5) - 1]; return n[0].toUpperCase() + n.slice(1); };
 function formMonth(p, mk) {
-  const occ = projection(p.currency).flatMap(m => m.items).filter(o => o.p === p);
-  const o = occ.find(x => x.mk === mk);
+  const all = projection(p.currency).flatMap(m => m.items).filter(o => o.p === p);
+  const o = all.find(x => x.mk === mk), occ = all.filter(x => !x.skip);
   if (!o) return formPlan(p);
   const mes = monthTitle(mk), inc = isIn(p), ov = p.over?.[mk];
   const day = o.date ? +o.date.slice(8) : +(p.due || todayISO()).slice(8);
   openSheet(`<h2>${esc(p.desc)} · ${mes}</h2>
     <p class="muted small">Se repite todos los meses. Lo que cambies acá es <b>solo para ${mes.toLowerCase()}</b>; los demás meses quedan igual.</p>
     <div class="row">
-      <label class="field"><span class="label">Monto de ${mes.toLowerCase()}</span><input type="text" inputmode="decimal" id="fAmt" value="${new Intl.NumberFormat("es-AR", { maximumFractionDigits: 2 }).format(Math.abs(o.amount))}"></label>
+      <label class="field"><span class="label">Monto de ${mes.toLowerCase()}</span><input type="text" inputmode="decimal" id="fAmt" value="${new Intl.NumberFormat("es-AR", { maximumFractionDigits: 2 }).format(o.skip ? p.amount : Math.abs(o.amount))}"></label>
       <label class="field" style="flex:0 1 120px"><span class="label">Día</span><input type="number" inputmode="numeric" min="1" max="31" id="fDay" value="${day}"></label>
     </div>
     <p class="err" id="fErr" hidden></p>
     <button class="btn" id="fOk">Guardar para ${mes.toLowerCase()}</button>
     ${occ[0] === o ? `<button class="btn" id="fPaid" style="background:var(--green)">${inc ? "Ya lo cobré" : "Ya lo pagué"}</button>` : ""}
-    <div class="row"><button class="btn ghost small" id="fAll">Cambiar todos los meses</button><button class="btn ghost small" id="fSkip">No va en ${mes.toLowerCase()}</button></div>
+    <div class="row"><button class="btn ghost small" id="fAll">Cambiar todos los meses</button>${o.skip ? "" : `<button class="btn ghost small" id="fSkip">No va en ${mes.toLowerCase()}</button>`}</div>
     ${ov ? `<button class="btn ghost small" id="fReset">Volver a lo de todos los meses (${money(p.amount, p.currency)})</button>` : ""}
     <button class="btn ghost" data-close>Cancelar</button>`, b => {
     const read = () => {
@@ -733,7 +737,8 @@ function formMonth(p, mk) {
     const paid = b.querySelector("#fPaid");
     if (paid) paid.onclick = () => { const r = read(); if (r) formPay(p, mk, r.amt); };
     b.querySelector("#fAll").onclick = () => formPlan(p);
-    b.querySelector("#fSkip").onclick = () => { p.over = p.over || {}; p.over[mk] = { skip: true }; save(); closeSheet(); render(); toast(`Sacado de ${mes.toLowerCase()}`); };
+    const skip = b.querySelector("#fSkip");
+    if (skip) skip.onclick = () => { p.over = p.over || {}; p.over[mk] = { skip: true }; save(); closeSheet(); render(); toast(`Sacado de ${mes.toLowerCase()}`); };
     const reset = b.querySelector("#fReset");
     if (reset) reset.onclick = () => { delete p.over[mk]; save(); closeSheet(); render(); toast("Como todos los meses"); };
   });
@@ -1125,6 +1130,7 @@ document.addEventListener("click", e => {
   else if (d.goto) { tab = d.goto; render(); scrollTo(0, 0); }
   else if ("close" in d) closeSheet();
   else if (d.tx) formTx(db.txs.find(t => t.id === d.tx));
+  else if (d.addmonth) formPlan(null, { due: d.addmonth === monthKey(todayISO()) ? todayISO() : dayIn(d.addmonth, 1), accountId: lastAccount() });
   else if (d.plan) { const p = db.planned.find(p => p.id === d.plan); if (p) p.monthly && d.mk ? formMonth(p, d.mk) : formPlan(p); }
   else if (d.import) formImport(acctById(d.import));
   else if (d.adjust) formAdjust(acctById(d.adjust));
