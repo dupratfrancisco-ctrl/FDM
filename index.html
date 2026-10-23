@@ -476,7 +476,10 @@ function viewCuentas() {
     <p class="small">Si tu banco no deja exportar (como Ualá), sacá <b>capturas de pantalla</b> de la lista de movimientos y subilas en <b>Importar movimientos</b>: fdm lee las imágenes en el celular, sin mandarlas a ningún lado. También acepta el resumen en PDF, un CSV o texto pegado. Los que ya estaban no se repiten.</p></section>
   <section class="card"><h2>Copia de seguridad</h2>
     <p class="muted small">Todo queda guardado solo en este celular. Hacé una copia para pasarla a otro teléfono o por si borrás el navegador.</p>
-    <div class="row"><button class="btn ghost" data-act="backup">Guardar copia</button><button class="btn ghost" data-act="restore">Cargar copia</button></div></section>`;
+    <div class="row"><button class="btn ghost" data-act="backup">Guardar copia</button><button class="btn ghost" data-act="restore">Cargar copia</button></div></section>
+  <section class="card"><h2>Empezar de cero</h2>
+    <p class="muted small">Borra todo lo que hay en esta app en este celular: cuentas, movimientos y planeados. Si querés conservarlo, primero guardá una copia.</p>
+    <button class="btn danger" data-act="wipe">Borrar todo y empezar de cero</button></section>`;
   return html;
 }
 
@@ -1141,6 +1144,13 @@ function applyBackup(d) {
   if (!confirm(`La copia tiene ${n} cuenta${n === 1 ? "" : "s"}, ${m} movimiento${m === 1 ? "" : "s"} y ${k} planeado${k === 1 ? "" : "s"}. Reemplaza todo lo que hay ahora en la app. ¿Seguir?`)) return;
   db = d; save(); closeSheet(); render(); toast("Copia cargada");
 }
+function wipe() {
+  const n = db.accounts.length + db.txs.length + db.planned.length;
+  if (n && !confirm("¿Borrar todo lo que hay en la app en este celular? No se puede deshacer.")) return;
+  db = blank(); save();
+  try { localStorage.removeItem("fdm:lastAcct"); sessionStorage.removeItem("fdm:tab"); } catch {}
+  tab = "inicio"; render(); scrollTo(0, 0); toast("Listo, empezás de cero");
+}
 function restore() {
   openSheet(`<h2>Cargar copia</h2>
     <label class="field"><span class="label">Elegí el archivo de la copia</span><input type="file" id="fIn"></label>
@@ -1193,6 +1203,7 @@ document.addEventListener("click", e => {
   else if (d.chip) { const c = frequent()[+d.chip]; if (!c) return; document.getElementById("qDesc").value = c.desc; const s = document.getElementById("qAcct"); if (s && acctById(c.accountId)) s.value = c.accountId; const amt = document.getElementById("qAmt"); if (amt.value.trim()) quickAdd(); else amt.focus(); }
   else if (d.act === "backup") backup();
   else if (d.act === "restore") restore();
+  else if (d.act === "wipe") wipe();
 });
 document.addEventListener("input", e => {
   if (e.target.id !== "qAmt") return;
