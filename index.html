@@ -184,7 +184,9 @@ const guessCat = (desc, amount) => {
 
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 const todayISO = () => { const d = new Date(); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().slice(0, 10); };
-const blank = () => ({ v: 1, accounts: [], txs: [], planned: [], groups: [] });
+const blank = () => ({ v: 1, accounts: [], txs: [], planned: [], groups: [], carry: {} });
+// Lo que anotaste que te sobró del mes anterior, por moneda y mes
+const carryOf = (cur, mk) => db.carry?.[cur]?.[mk];
 
 let db = load();
 function load() {
@@ -273,7 +275,7 @@ function viewInicio() {
       <div class="split"><button class="chip bank" data-act="balance"><span class="k">Tenés hoy · <u>editar</u></span><span class="v num">${money(m.start, cur)}</span></button>
       <div class="chip plan"><span class="k">Por pagar este mes</span><span class="v num">− ${money(m.out, cur)}</span></div>
       ${m.inn ? `<div class="chip bank"><span class="k">Por cobrar este mes</span><span class="v num">+ ${money(m.inn, cur)}</span></div>` : ""}</div>
-      ${any ? `<div class="ahead">${rest.slice(0, 2).map(r => `<span>En ${MONTHS[+r.mk.slice(5) - 1]} ${r.end < 0 ? "te falta" : "te sobra"}</span><b class="num ${r.end < 0 ? "neg" : ""}">${money(Math.abs(r.end), cur)}</b>`).join("")}</div>` : ""}</div>`;
+      ${any ? `<div class="ahead">${rest.slice(0, 2).map(r => `<span>${r.carry != null ? `Terminás ${MONTHS[+r.mk.slice(5) - 1]} con` : `En ${MONTHS[+r.mk.slice(5) - 1]} ${r.end < 0 ? "te falta" : "te sobra"}`}</span><b class="num ${r.end < 0 ? "neg" : ""}">${r.carry != null ? money(r.end, cur) : money(Math.abs(r.end), cur)}</b>`).join("")}</div>` : ""}</div>`;
   }
   html += `<button class="btn ghost small" data-act="balance">Actualizar cuánto tengo</button></section>`;
 
@@ -412,8 +414,9 @@ function projection(cur) {
   const real = round2(db.accounts.filter(a => a.currency === cur).reduce((s, a) => s + balance(a), 0));
   const months = [];
   for (let mk = now; mk <= last; mk = addMonths(mk, 1)) {
-    let run = mk === now ? real : 0;
-    const m = { mk, start: run, inn: 0, out: 0, items: [], done: [] };
+    const carry = mk === now ? undefined : carryOf(cur, mk);
+    let run = mk === now ? real : carry ?? 0;
+    const m = { mk, start: run, carry, inn: 0, out: 0, items: [], done: [] };
     // Lo que ya se cobró o pagó de lo planeado en este mes, con el día
     if (mk === now) m.done = db.txs.filter(t => t.src === "planned" && monthKey(t.date) === now && curOf(t) === cur).sort((a, b) => a.date.localeCompare(b.date));
     for (const o of occ) {
@@ -462,12 +465,13 @@ function monthCard(m, cur, multi, first) {
     ${m.inn ? `<span>Te falta cobrar</span><b class="num" style="color:var(--green)">+ ${money(m.inn, cur)}</b>` : ""}
     ${m.out ? `<span>Te falta pagar</span><b class="num" style="color:var(--amber)">− ${money(m.out, cur)}</b>` : ""}
     <span class="end">Terminás el mes con</span><b class="num end" style="${m.end < 0 ? "color:var(--red)" : ""}">${money(m.end, cur)}</b>`
-    : `${m.inn ? `<span>Cobrás</span><b class="num" style="color:var(--green)">+ ${money(m.inn, cur)}</b>` : ""}
+    : `${m.carry != null ? `<span>Te sobró de ${prev}<button class="edit" data-carry="${m.mk}" data-cur="${cur}">Editar</button></span><b class="num">${money(m.carry, cur)}</b>` : ""}
+    ${m.inn ? `<span>Cobrás</span><b class="num" style="color:var(--green)">+ ${money(m.inn, cur)}</b>` : ""}
     ${m.out ? `<span>Pagás</span><b class="num" style="color:var(--amber)">− ${money(m.out, cur)}</b>` : ""}
-    <span class="end">${m.end < 0 ? "Te falta" : "Te sobra"}</span><b class="num end" style="${m.end < 0 ? "color:var(--red)" : ""}">${money(Math.abs(m.end), cur)}</b>`;
+    <span class="end">${m.carry != null ? "Terminás con" : m.end < 0 ? "Te falta" : "Te sobra"}</span><b class="num end" style="${m.end < 0 ? "color:var(--red)" : ""}">${m.carry != null ? money(m.end, cur) : money(Math.abs(m.end), cur)}</b>`;
   return `<section class="card"><h2>${name[0].toUpperCase() + name.slice(1)}${multi ? " · " + cur : ""}</h2>
     <div class="msum">${sum}</div>
-    ${first ? "" : `<p class="muted small">Más lo que te sobre de ${prev}.</p>`}
+    ${first || m.carry != null ? "" : `<button class="btn ghost small" data-carry="${m.mk}" data-cur="${cur}">¿Te sobró de ${prev}? Ponelo acá</button>`}
     ${m.items.length || m.done.length ? `<div class="list">${m.done.map(doneRow).join("")}${groupRows(m.items)}</div>` : `<p class="muted small">Nada anotado para este mes.</p>`}
     <div class="row"><button class="btn ghost small" data-addmonth="${m.mk}">+ Agregar</button><button class="btn ghost small" data-newgroup="${m.mk}">+ Lista</button></div></section>`;
 }
@@ -725,6 +729,28 @@ function formPlan(p, preset = {}) {
 }
 
 const monthOptions = sel => { const now = monthKey(todayISO()); let o = ""; for (let i = 0; i < 12; i++) { const mk = addMonths(now, i), n = monthName(mk); o += `<option value="${mk}" ${mk === sel ? "selected" : ""}>${n[0].toUpperCase() + n.slice(1)}</option>`; } return o; };
+function formCarry(mk, cur) {
+  const prevMk = addMonths(mk, -1), prev = MONTHS[+prevMk.slice(5) - 1];
+  const pm = projection(cur).find(m => m.mk === prevMk);
+  const has = carryOf(cur, mk) != null, guess = pm ? Math.max(0, pm.end) : 0;
+  const fmt = n => new Intl.NumberFormat("es-AR", { maximumFractionDigits: 2 }).format(n);
+  openSheet(`<h2>¿Cuánto te sobró de ${prev}?</h2>
+    <p class="muted small">Se suma a ${MONTHS[+mk.slice(5) - 1]}.${pm ? ` Según lo que anotaste, te quedarían ${money(pm.end, cur)}; poné lo que te sobró de verdad.` : ""}</p>
+    <label class="field"><span class="label">Te sobró</span><input type="text" inputmode="decimal" id="fAmt" value="${fmt(has ? carryOf(cur, mk) : guess)}"></label>
+    <p class="err" id="fErr" hidden></p>
+    <button class="btn" id="fOk">Guardar</button>
+    ${has ? `<button class="btn ghost" id="fDel">Sacarlo</button>` : ""}
+    <button class="btn ghost" data-close>Cancelar</button>`, b => {
+    b.querySelector("#fOk").onclick = () => {
+      const v = parseAmount(b.querySelector("#fAmt").value);
+      if (isNaN(v)) { const e = b.querySelector("#fErr"); e.textContent = "Poné un número"; e.hidden = false; return; }
+      db.carry = db.carry || {}; (db.carry[cur] = db.carry[cur] || {})[mk] = v;
+      save(); closeSheet(); render(); toast(`Anotado lo que te sobró de ${prev}`);
+    };
+    const del = b.querySelector("#fDel");
+    if (del) del.onclick = () => { delete db.carry[cur][mk]; save(); closeSheet(); render(); };
+  });
+}
 function formNewGroup(mk) {
   const now = monthKey(todayISO());
   openSheet(`<h2>Nueva lista de gastos</h2>
@@ -1272,6 +1298,7 @@ document.addEventListener("click", e => {
   else if (d.goto) { tab = d.goto; render(); scrollTo(0, 0); }
   else if ("close" in d) closeSheet();
   else if (d.tx) formTx(db.txs.find(t => t.id === d.tx));
+  else if (d.carry) formCarry(d.carry, d.cur || "ARS");
   else if (d.group) { const g = groupById(d.group); if (g) formGroup(g); }
   else if (d.gitem) { const p = db.planned.find(x => x.id === d.gitem); if (p) formGroupItem(p); }
   else if ("newgroup" in d) formNewGroup(d.newgroup);
