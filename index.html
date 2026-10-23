@@ -184,7 +184,7 @@ const guessCat = (desc, amount) => {
 
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 const todayISO = () => { const d = new Date(); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().slice(0, 10); };
-const blank = () => ({ v: 1, accounts: [], txs: [], planned: [] });
+const blank = () => ({ v: 1, accounts: [], txs: [], planned: [], groups: [] });
 
 let db = load();
 function load() {
@@ -293,7 +293,7 @@ function viewInicio() {
 
   const next = currencies().flatMap(cur => projection(cur).slice(0, 2).flatMap(m => m.items.filter(o => !o.skip))).slice(0, 5);
   if (next.length) {
-    html += `<section class="card"><div class="cardhead"><h2>Lo que viene</h2><button class="btn ghost small" data-goto="planeados">Mes por mes</button></div><div class="list">${next.map(occRow).join("")}</div></section>`;
+    html += `<section class="card"><div class="cardhead"><h2>Lo que viene</h2><button class="btn ghost small" data-goto="planeados">Mes por mes</button></div><div class="list">${groupRows(next)}</div></section>`;
   }
   const last = [...db.txs].sort(byDateDesc).slice(0, 5);
   if (last.length) {
@@ -399,7 +399,7 @@ function projection(cur) {
   for (const p of mine) {
     const first = p.due && p.due >= today ? p.due : null;
     const day = +(p.due || today).slice(8);
-    let mk = first ? monthKey(first) : now;
+    let mk = first ? monthKey(first) : p.mk && p.mk > now ? p.mk : now;
     for (let i = 0; mk <= last; i++, mk = addMonths(mk, 1)) {
       // Un mes puede tener su propio monto o día, o no ir ese mes
       const ov = p.monthly && p.over?.[mk];
@@ -436,6 +436,24 @@ function occRow(o) {
   const left = db.accounts.length && o.mk === monthKey(todayISO()) ? `<span style="color:${o.left < 0 ? "var(--red)" : "var(--green)"};font-weight:600">${o.left < 0 ? "te faltan " + money(-o.left, p.currency) : "te quedan " + money(o.left, p.currency)}</span> · ` : "";
   return `<button class="item" data-plan="${p.id}" data-mk="${o.mk}"><span class="t">${esc(p.desc)}${when}</span><span class="a num ${isIn(p) ? "in" : "plan"}">${isIn(p) ? "+ " : "− "}${money(Math.abs(o.amount), p.currency)}</span><span class="s">${left}${isIn(p) ? "cobro" : esc(p.cat)}${o.changed ? " · cambiado este mes" : p.monthly ? " · todos los meses" : ""}</span></button>`;
 }
+const groupsList = () => db.groups || (db.groups = []);
+const groupById = id => groupsList().find(g => g.id === id);
+// Las cosas de una lista se ven juntas en un renglón con el total
+function groupRows(items) {
+  const out = [], seen = new Map();
+  for (const o of items) {
+    const g = o.p.groupId && groupById(o.p.groupId);
+    if (!g || o.skip) { out.push(occRow(o)); continue; }
+    let r = seen.get(g.id);
+    if (!r) { r = { g, n: 0, sum: 0, left: 0, mk: o.mk, cur: o.p.currency }; seen.set(g.id, r); out.push(r); }
+    r.n++; r.sum = round2(r.sum - o.amount); r.left = o.left;
+  }
+  return out.map(x => typeof x === "string" ? x : groupRow(x)).join("");
+}
+function groupRow(r) {
+  const left = db.accounts.length && r.mk === monthKey(todayISO()) ? `<span style="color:${r.left < 0 ? "var(--red)" : "var(--green)"};font-weight:600">${r.left < 0 ? "te faltan " + money(-r.left, r.cur) : "te quedan " + money(r.left, r.cur)}</span> · ` : "";
+  return `<button class="item" data-group="${r.g.id}"><span class="t">${esc(r.g.name)}<span class="tag">lista · ${r.n} ${r.n === 1 ? "cosa" : "cosas"}</span></span><span class="a num plan">− ${money(r.sum, r.cur)}</span><span class="s">${left}tocá para ver la lista</span></button>`;
+}
 const doneRow = t => `<button class="item" data-tx="${t.id}"><span class="t">${esc(t.desc)} <span class="tag done">✓ ${t.amount > 0 ? "cobrado" : "pagado"} el ${shortDate(t.date)}</span></span><span class="a num ${t.amount > 0 ? "in" : "out"}">${t.amount > 0 ? "+ " : "− "}${money(Math.abs(t.amount), curOf(t))}</span><span class="s">${esc(t.cat)} · ya está en tu saldo</span></button>`;
 function monthCard(m, cur, multi, first) {
   const name = monthName(m.mk), prev = MONTHS[+addMonths(m.mk, -1).slice(5) - 1];
@@ -450,13 +468,14 @@ function monthCard(m, cur, multi, first) {
   return `<section class="card"><h2>${name[0].toUpperCase() + name.slice(1)}${multi ? " · " + cur : ""}</h2>
     <div class="msum">${sum}</div>
     ${first ? "" : `<p class="muted small">Más lo que te sobre de ${prev}.</p>`}
-    ${m.items.length || m.done.length ? `<div class="list">${m.done.map(doneRow).join("")}${m.items.map(occRow).join("")}</div>` : `<p class="muted small">Nada anotado para este mes.</p>`}
-    <button class="btn ghost small" data-addmonth="${m.mk}">+ Agregar a ${MONTHS[+m.mk.slice(5) - 1]}</button></section>`;
+    ${m.items.length || m.done.length ? `<div class="list">${m.done.map(doneRow).join("")}${groupRows(m.items)}</div>` : `<p class="muted small">Nada anotado para este mes.</p>`}
+    <div class="row"><button class="btn ghost small" data-addmonth="${m.mk}">+ Agregar</button><button class="btn ghost small" data-newgroup="${m.mk}">+ Lista</button></div></section>`;
 }
 function viewPlaneados() {
   const curs = currencies().filter(c => db.planned.some(p => p.currency === c));
   let html = `<section class="card"><h2>Mes por mes</h2><p class="muted small">Lo que vas a cobrar y pagar en cada mes. Tocá uno para cambiar el monto o el día, o para marcarlo como cobrado o pagado.</p>
-    ${db.planned.some(isIn) ? "" : `<button class="btn ghost small" data-act="addIncome">Agregar lo que cobrás todos los meses</button>`}</section>`;
+    ${db.planned.some(isIn) ? "" : `<button class="btn ghost small" data-act="addIncome">Agregar lo que cobrás todos los meses</button>`}
+    <button class="btn ghost small" data-newgroup="">+ Lista de gastos (mudanza, viaje, cumple…)</button></section>`;
   if (!curs.length) return html + `<section class="card"><p class="empty">No tenés nada anotado. Tocá <b>+</b> para agregar algo que vas a pagar o cobrar.</p></section>`;
   for (const cur of curs) projection(cur).forEach((m, i) => (html += monthCard(m, cur, curs.length > 1, i === 0)));
   return html;
@@ -705,6 +724,81 @@ function formPlan(p, preset = {}) {
   });
 }
 
+const monthOptions = sel => { const now = monthKey(todayISO()); let o = ""; for (let i = 0; i < 12; i++) { const mk = addMonths(now, i), n = monthName(mk); o += `<option value="${mk}" ${mk === sel ? "selected" : ""}>${n[0].toUpperCase() + n.slice(1)}</option>`; } return o; };
+function formNewGroup(mk) {
+  const now = monthKey(todayISO());
+  openSheet(`<h2>Nueva lista de gastos</h2>
+    <p class="muted small">Para algo con varias cosas: una mudanza, un viaje, un cumple. Le cargás cada cosa con su precio y se resta del mes que elijas.</p>
+    <label class="field"><span class="label">Nombre</span><input type="text" id="gName" placeholder="Mudanza" maxlength="40"></label>
+    <label class="field"><span class="label">Para qué mes</span><select id="gMk">${monthOptions(mk || addMonths(now, 1))}</select></label>
+    <p class="err" id="fErr" hidden></p>
+    <button class="btn" id="gOk">Crear lista</button><button class="btn ghost" data-close>Cancelar</button>`, b => {
+    b.querySelector("#gOk").onclick = () => {
+      const name = b.querySelector("#gName").value.trim();
+      if (!name) { const e = b.querySelector("#fErr"); e.textContent = "Poné un nombre"; e.hidden = false; return; }
+      const g = { id: uid(), name, mk: b.querySelector("#gMk").value, created: Date.now() };
+      groupsList().push(g); save(); render(); formGroup(g, true);
+    };
+  });
+}
+function formGroup(g, focus) {
+  const items = db.planned.filter(p => p.groupId === g.id).sort((a, b) => a.created - b.created);
+  const bought = db.txs.filter(t => t.groupId === g.id).sort((a, b) => a.date.localeCompare(b.date));
+  const cur = items[0]?.currency || curOf(bought[0] || {}) || acctById(lastAccount())?.currency || "ARS";
+  const pend = round2(items.reduce((s, p) => s + p.amount, 0)), got = round2(bought.reduce((s, t) => s - t.amount, 0));
+  openSheet(`<h2>${esc(g.name)}</h2>
+    <div class="row"><label class="field"><span class="label">Nombre</span><input type="text" id="gName" value="${esc(g.name)}" maxlength="40"></label>
+    <label class="field"><span class="label">Mes</span><select id="gMk">${monthOptions(g.mk)}</select></label></div>
+    <div class="msum"><span>Falta comprar</span><b class="num" style="color:var(--amber)">${money(pend, cur)}</b>
+      ${got ? `<span>Ya comprado</span><b class="num">${money(got, cur)}</b>` : ""}
+      <span class="end">Total</span><b class="num end">${money(round2(pend + got), cur)}</b></div>
+    <div class="list">${items.map(p => `<button class="item" data-gitem="${p.id}"><span class="t">${esc(p.desc)}</span><span class="a num plan">− ${money(p.amount, p.currency)}</span><span class="s">tocá para cambiarlo o marcarlo comprado</span></button>`).join("")}
+      ${bought.map(t => `<div class="item" style="opacity:.65"><span class="t">${esc(t.desc)} <span class="tag done">✓ comprado el ${shortDate(t.date)}</span></span><span class="a num out">− ${money(-t.amount, curOf(t))}</span><span class="s">ya está en tus gastos</span></div>`).join("")}
+      ${items.length || bought.length ? "" : `<p class="muted small">Todavía no hay nada. Agregá la primera cosa abajo.</p>`}</div>
+    <div class="qrow"><input type="text" id="gDesc" placeholder="Qué (ej. cama)" maxlength="80" enterkeyhint="next" style="flex:1"><input type="text" inputmode="decimal" id="gAmt" placeholder="$ 0" style="flex:0 0 36%" enterkeyhint="done"></div>
+    <button class="btn" id="gAdd">Agregar a la lista</button>
+    <p class="err" id="fErr" hidden></p>
+    <div class="row"><button class="btn ghost" data-close>Listo</button><button class="btn ghost small" id="gDel" style="color:var(--red)">Borrar la lista</button></div>`, b => {
+    if (focus) b.querySelector("#gDesc").focus();
+    b.querySelector("#gName").onchange = e => { const v = e.target.value.trim(); if (v) { g.name = v; save(); render(); } };
+    b.querySelector("#gMk").onchange = e => { g.mk = e.target.value; for (const p of items) { p.mk = g.mk; p.due = ""; } save(); render(); };
+    b.querySelector("#gAdd").onclick = () => {
+      const desc = b.querySelector("#gDesc").value.trim(), amt = Math.abs(parseAmount(b.querySelector("#gAmt").value)), err = b.querySelector("#fErr");
+      if (!desc) { err.textContent = "Escribí qué es"; err.hidden = false; b.querySelector("#gDesc").focus(); return; }
+      if (!amt) { err.textContent = "Poné cuánto sale"; err.hidden = false; b.querySelector("#gAmt").focus(); return; }
+      const a = acctById(lastAccount());
+      db.planned.push({ id: uid(), created: Date.now(), kind: "out", desc, amount: amt, currency: a?.currency || cur, due: "", mk: g.mk, cat: guessCat(desc, -1), accountId: a?.id || "", monthly: false, groupId: g.id });
+      save(); render(); formGroup(g, true);
+    };
+    b.querySelector("#gDel").onclick = () => {
+      if (!confirm(`¿Borrar la lista ${g.name}? Lo que ya compraste queda en tus gastos.`)) return;
+      db.planned = db.planned.filter(p => p.groupId !== g.id);
+      db.groups = groupsList().filter(x => x !== g);
+      save(); closeSheet(); render(); toast("Lista borrada");
+    };
+  });
+}
+function formGroupItem(p) {
+  const g = groupById(p.groupId);
+  openSheet(`<h2>${esc(p.desc)}</h2><p class="muted small">De la lista ${esc(g?.name || "")}</p>
+    <label class="field"><span class="label">Qué es</span><input type="text" id="fDesc" value="${esc(p.desc)}" maxlength="80"></label>
+    <label class="field"><span class="label">Cuánto sale</span><input type="text" inputmode="decimal" id="fAmt" value="${new Intl.NumberFormat("es-AR", { maximumFractionDigits: 2 }).format(p.amount)}"></label>
+    <p class="err" id="fErr" hidden></p>
+    <button class="btn" id="fPaid" style="background:var(--green)">Ya lo compré</button>
+    <div class="row"><button class="btn ghost" id="fOk">Guardar</button><button class="btn danger" id="fDel">Sacar de la lista</button></div>
+    <button class="btn ghost" id="fBack">Volver a la lista</button>`, b => {
+    const read = () => {
+      const desc = b.querySelector("#fDesc").value.trim(), amt = Math.abs(parseAmount(b.querySelector("#fAmt").value)), err = b.querySelector("#fErr");
+      if (!desc || !amt) { err.textContent = !desc ? "Escribí qué es" : "Poné cuánto sale"; err.hidden = false; return null; }
+      p.desc = desc; p.amount = amt; return amt;
+    };
+    const back = () => (g ? formGroup(g) : closeSheet());
+    b.querySelector("#fOk").onclick = () => { if (read()) { save(); render(); back(); } };
+    b.querySelector("#fPaid").onclick = () => { const amt = read(); if (amt) formPay(p, undefined, amt); };
+    b.querySelector("#fDel").onclick = () => { db.planned = db.planned.filter(x => x !== p); save(); render(); back(); };
+    b.querySelector("#fBack").onclick = back;
+  });
+}
 const monthTitle = mk => { const n = MONTHS[+mk.slice(5) - 1]; return n[0].toUpperCase() + n.slice(1); };
 function formMonth(p, mk) {
   const all = projection(p.currency).flatMap(m => m.items).filter(o => o.p === p);
@@ -763,14 +857,16 @@ function formPay(p, mk, amount) {
     b.querySelector("#fOk").onclick = () => {
       const amt = parseAmount(b.querySelector("#fAmt").value);
       if (isNaN(amt) || amt <= 0) { const e = b.querySelector("#fErr"); e.textContent = "Poné un monto"; e.hidden = false; return; }
-      db.txs.push({ id: uid(), created: Date.now(), src: "planned", plannedId: p.id, accountId: b.querySelector("#fAcct").value, amount: inc ? amt : -amt, desc: p.desc, cat: p.cat, date: b.querySelector("#fDate").value || todayISO() });
+      db.txs.push({ id: uid(), created: Date.now(), src: "planned", plannedId: p.id, ...(p.groupId ? { groupId: p.groupId } : {}), accountId: b.querySelector("#fAcct").value, amount: inc ? amt : -amt, desc: p.desc, cat: p.cat, date: b.querySelector("#fDate").value || todayISO() });
       if (p.monthly) {
         // Queda para el mes siguiente al que se cobró o pagó, el día de siempre
         const from = mk || monthKey(p.due || todayISO());
         p.due = dayIn(addMonths(from, 1), +(p.due || todayISO()).slice(8));
         if (p.over) for (const k of Object.keys(p.over)) if (k <= from) delete p.over[k];
       } else db.planned = db.planned.filter(x => x !== p);
-      save(); closeSheet(); render(); toast(inc ? "Cobrado y anotado" : "Pagado y anotado en Gastos");
+      save(); closeSheet(); render(); toast(inc ? "Cobrado y anotado" : p.groupId ? "Comprado y anotado en Gastos" : "Pagado y anotado en Gastos");
+      const g = p.groupId && groupById(p.groupId);
+      if (g) formGroup(g);
     };
   });
 }
@@ -1176,6 +1272,9 @@ document.addEventListener("click", e => {
   else if (d.goto) { tab = d.goto; render(); scrollTo(0, 0); }
   else if ("close" in d) closeSheet();
   else if (d.tx) formTx(db.txs.find(t => t.id === d.tx));
+  else if (d.group) { const g = groupById(d.group); if (g) formGroup(g); }
+  else if (d.gitem) { const p = db.planned.find(x => x.id === d.gitem); if (p) formGroupItem(p); }
+  else if ("newgroup" in d) formNewGroup(d.newgroup);
   else if (d.addmonth) formPlan(null, { due: d.addmonth === monthKey(todayISO()) ? todayISO() : dayIn(d.addmonth, 1), accountId: lastAccount() });
   else if (d.plan) { const p = db.planned.find(p => p.id === d.plan); if (p) p.monthly && d.mk ? formMonth(p, d.mk) : formPlan(p); }
   else if (d.import) formImport(acctById(d.import));
@@ -1215,6 +1314,8 @@ document.addEventListener("keydown", e => {
   if (e.key !== "Enter") return;
   if (e.target.id === "qAmt") { e.preventDefault(); const d = document.getElementById("qDesc"); d.value.trim() ? quickAdd() : d.focus(); }
   else if (e.target.id === "qDesc") { e.preventDefault(); quickAdd(); }
+  else if (e.target.id === "gDesc") { e.preventDefault(); document.getElementById("gAmt").focus(); }
+  else if (e.target.id === "gAmt") { e.preventDefault(); document.getElementById("gAdd").click(); }
 });
 document.addEventListener("change", e => {
   const f = e.target.dataset?.filt; if (!f) return;
