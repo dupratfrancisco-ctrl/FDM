@@ -134,6 +134,8 @@ nav.tabs button[aria-current=page]{color:var(--ink)}
 .ahead{display:grid;grid-template-columns:1fr auto;gap:3px 12px;font-size:.92rem;color:var(--muted)}
 .ahead b{color:var(--ink)}.ahead b.neg{color:var(--red)}
 .tag.done{background:var(--green-2);color:var(--green)}
+.edit{font-size:.82rem;font-weight:700;color:var(--green);text-decoration:underline;padding:2px 0 2px 8px}
+button.chip{text-align:left;font:inherit;cursor:pointer}
 /* Anotar rápido */
 .quick{gap:10px}
 .qrow{display:flex;gap:8px;flex-wrap:wrap}
@@ -268,7 +270,7 @@ function viewInicio() {
     const [m, ...rest] = projection(cur);
     const any = db.planned.some(p => p.currency === cur);
     html += `<div class="cur"><div class="left"><span class="big num ${m.end < 0 ? "neg" : ""}">${money(m.end, cur)}</span></div>
-      <div class="split"><div class="chip bank"><span class="k">Tenés hoy</span><span class="v num">${money(m.start, cur)}</span></div>
+      <div class="split"><button class="chip bank" data-act="balance"><span class="k">Tenés hoy · <u>editar</u></span><span class="v num">${money(m.start, cur)}</span></button>
       <div class="chip plan"><span class="k">Por pagar este mes</span><span class="v num">− ${money(m.out, cur)}</span></div>
       ${m.inn ? `<div class="chip bank"><span class="k">Por cobrar este mes</span><span class="v num">+ ${money(m.inn, cur)}</span></div>` : ""}</div>
       ${any ? `<div class="ahead">${rest.slice(0, 2).map(r => `<span>En ${MONTHS[+r.mk.slice(5) - 1]} ${r.end < 0 ? "te falta" : "te sobra"}</span><b class="num ${r.end < 0 ? "neg" : ""}">${money(Math.abs(r.end), cur)}</b>`).join("")}</div>` : ""}</div>`;
@@ -434,7 +436,7 @@ const doneRow = t => `<button class="item" data-tx="${t.id}"><span class="t">${e
 function monthCard(m, cur, multi, first) {
   const name = monthName(m.mk), prev = MONTHS[+addMonths(m.mk, -1).slice(5) - 1];
   const sum = first
-    ? `<span>Tenés hoy</span><b class="num">${money(m.start, cur)}</b>
+    ? `<span>Tenés hoy<button class="edit" data-act="balance">Editar</button></span><b class="num">${money(m.start, cur)}</b>
     ${m.inn ? `<span>Te falta cobrar</span><b class="num" style="color:var(--green)">+ ${money(m.inn, cur)}</b>` : ""}
     ${m.out ? `<span>Te falta pagar</span><b class="num" style="color:var(--amber)">− ${money(m.out, cur)}</b>` : ""}
     <span class="end">Terminás el mes con</span><b class="num end" style="${m.end < 0 ? "color:var(--red)" : ""}">${money(m.end, cur)}</b>`
@@ -557,9 +559,9 @@ function formAccount(a) {
 }
 
 function formAdjust(a) {
-  openSheet(`<h2>Corregir saldo de ${esc(a.name)}</h2>
+  openSheet(`<h2>¿Cuánto tenés ahora en ${esc(a.name)}?</h2>
     <p class="muted small">Poné lo que te muestra el banco ahora. Los movimientos ya anotados no se tocan.</p>
-    <label class="field"><span class="label">Saldo actual</span><input type="text" inputmode="decimal" id="fBal" value="${String(balance(a)).replace(".", ",")}"></label>
+    <label class="field"><span class="label">Saldo actual</span><input type="text" inputmode="decimal" id="fBal" value="${new Intl.NumberFormat("es-AR", { maximumFractionDigits: 2 }).format(balance(a))}"></label>
     <label class="check"><input type="checkbox" id="fDiff" checked> Anotar la diferencia como gasto (o ingreso) sin detalle</label>
     <p class="muted small" id="fDiffTxt"></p>
     <p class="err" id="fErr" hidden></p>
