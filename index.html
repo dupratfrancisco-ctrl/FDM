@@ -396,9 +396,10 @@ const dayIn = (mk, day) => { const [y, m] = mk.split("-").map(Number); return `$
 function projection(cur) {
   const today = todayISO(), now = monthKey(today);
   const mine = db.planned.filter(p => p.currency === cur);
-  let last = addMonths(now, 3);
-  for (const p of mine) if (p.due && monthKey(p.due) > last) last = monthKey(p.due);
-  if (last > addMonths(now, 12)) last = addMonths(now, 12);
+  // Se ven los meses hasta el que elegiste (o los próximos tres), y siempre los que tienen algo anotado
+  let last = db.until ? (db.until > now ? db.until : now) : addMonths(now, 3);
+  for (const p of mine) { const k = p.due ? monthKey(p.due) : p.mk; if (k && k > last) last = k; }
+  if (last > addMonths(now, 60)) last = addMonths(now, 60);
   const occ = [];
   for (const p of mine) {
     const first = p.due && p.due >= today ? p.due : null;
@@ -471,7 +472,7 @@ function monthCard(m, cur, multi, first) {
     ${m.inn ? `<span>Cobrás</span><b class="num" style="color:var(--green)">+ ${money(m.inn, cur)}</b>` : ""}
     ${m.out ? `<span>Pagás</span><b class="num" style="color:var(--amber)">− ${money(m.out, cur)}</b>` : ""}
     <span class="end">${m.carry != null ? "Terminás con" : m.end < 0 ? "Te falta" : "Te sobra"}</span><b class="num end" style="${m.end < 0 ? "color:var(--red)" : ""}">${m.carry != null ? money(m.end, cur) : money(Math.abs(m.end), cur)}</b>`;
-  return `<section class="card"><h2>${name[0].toUpperCase() + name.slice(1)}${multi ? " · " + cur : ""}</h2>
+  return `<section class="card"><div class="cardhead"><h2>${name[0].toUpperCase() + name.slice(1)}${multi ? " · " + cur : ""}</h2><button class="edit" style="color:var(--muted)" data-resetmonth="${m.mk}">Borrar mes</button></div>
     <div class="msum">${sum}</div>
     ${first || m.carry != null ? "" : `<button class="btn ghost small" data-carry="${m.mk}" data-cur="${cur}">¿Te sobró de ${prev}? Ponelo acá</button>`}
     ${m.items.length || m.done.length ? `<div class="list">${m.done.map(doneRow).join("")}${groupRows(m.items)}</div>` : `<p class="muted small">Nada anotado para este mes.</p>`}
@@ -483,8 +484,48 @@ function viewPlaneados() {
     ${db.planned.some(isIn) ? "" : `<button class="btn ghost small" data-act="addIncome">Agregar lo que cobrás todos los meses</button>`}
     <button class="btn ghost small" data-newgroup="">+ Lista de gastos (mudanza, viaje, cumple…)</button></section>`;
   if (!curs.length) return html + `<section class="card"><p class="empty">No tenés nada anotado. Tocá <b>+</b> para agregar algo que vas a pagar o cobrar.</p></section>`;
-  for (const cur of curs) projection(cur).forEach((m, i) => (html += monthCard(m, cur, curs.length > 1, i === 0)));
-  return html;
+  let lastMk = monthKey(todayISO());
+  for (const cur of curs) projection(cur).forEach((m, i) => { html += monthCard(m, cur, curs.length > 1, i === 0); if (m.mk > lastMk) lastMk = m.mk; });
+  return html + `<section class="card"><h2>Más meses</h2>
+    <button class="btn ghost" data-act="addmonth">+ Agregar ${MONTHS[+addMonths(lastMk, 1).slice(5) - 1]} ${addMonths(lastMk, 1).slice(0, 4)}</button>
+    <label class="field"><span class="label">Mostrar hasta</span><select id="fUntil">${untilOptions(lastMk)}</select></label>
+    <p class="muted small">Se agregan todos los meses hasta el que elijas, con lo que se repite ya puesto.</p></section>`;
+}
+function untilOptions(sel) {
+  const now = monthKey(todayISO());
+  let o = "";
+  for (let i = 0; i <= 60; i++) { const mk = addMonths(now, i), n = monthName(mk); o += `<option value="${mk}" ${mk === sel ? "selected" : ""}>${n[0].toUpperCase() + n.slice(1)}</option>`; }
+  return o;
+}
+// Lo que se anotó solo para un mes: lo de una vez, las listas, los cambios de ese mes y lo que sobró (lo que se repite no se toca)
+function monthStuff(mk) {
+  const now = monthKey(todayISO());
+  const once = db.planned.filter(p => !p.monthly && (p.due ? monthKey(p.due) : p.mk && p.mk > now ? p.mk : now) === mk);
+  const changed = db.planned.filter(p => p.monthly && p.over?.[mk]);
+  const groups = groupsList().filter(g => g.mk === mk);
+  const carry = Object.keys(db.carry || {}).filter(c => db.carry[c][mk] != null);
+  return { once, changed, groups, carry };
+}
+function resetMonth(mk) {
+  const now = monthKey(todayISO()), n = monthName(mk), mes = n[0].toUpperCase() + n.slice(1);
+  const st = monthStuff(mk), lines = [];
+  const loose = st.once.filter(p => !p.groupId);
+  if (loose.length) lines.push(`• Lo agregado para ${mes.split(" ")[0].toLowerCase()}: ${loose.map(p => p.desc).join(", ")}`);
+  if (st.groups.length) lines.push(`• Listas: ${st.groups.map(g => g.name).join(", ")}`);
+  if (st.changed.length) lines.push(`• Cambios solo de este mes en: ${st.changed.map(p => p.desc).join(", ")}`);
+  if (st.carry.length) lines.push(`• Lo que anotaste que te sobró del mes anterior`);
+  let last = monthKey(todayISO());
+  for (const c of currencies()) for (const m of projection(c)) if (m.mk > last) last = m.mk;
+  const removeView = mk === last && mk > now;
+  if (!lines.length && !removeView) return toast(`${mes} ya está como los demás`);
+  if (!confirm(`¿Borrar ${mes}?${lines.length ? `\n\nSe borra:\n${lines.join("\n")}` : ""}${removeView ? `\n\n${mes} deja de verse en la lista.` : `\n\nQueda como los demás meses.`}\n\nLo que ya cobraste o pagaste no se toca.`)) return;
+  const drop = new Set(st.once);
+  db.planned = db.planned.filter(p => !drop.has(p));
+  for (const p of st.changed) delete p.over[mk];
+  db.groups = groupsList().filter(g => !st.groups.includes(g));
+  for (const c of st.carry) delete db.carry[c][mk];
+  if (removeView) db.until = addMonths(mk, -1);
+  save(); render(); toast(removeView ? `${mes} borrado` : `${mes} quedó como los demás`);
 }
 
 function viewCuentas() {
@@ -1301,6 +1342,13 @@ document.addEventListener("click", e => {
   else if ("close" in d) closeSheet();
   else if (d.tx) formTx(db.txs.find(t => t.id === d.tx));
   else if (d.carry) formCarry(d.carry, d.cur || "ARS");
+  else if (d.resetmonth) resetMonth(d.resetmonth);
+  else if (d.act === "addmonth") {
+    let last = monthKey(todayISO());
+    for (const c of currencies()) for (const m of projection(c)) if (m.mk > last) last = m.mk;
+    db.until = addMonths(last, 1); save(); render();
+    const n = monthName(db.until); toast(`Agregado ${n}`);
+  }
   else if (d.group) { const g = groupById(d.group); if (g) formGroup(g); }
   else if (d.gitem) { const p = db.planned.find(x => x.id === d.gitem); if (p) formGroupItem(p); }
   else if ("newgroup" in d) formNewGroup(d.newgroup);
@@ -1347,6 +1395,7 @@ document.addEventListener("keydown", e => {
   else if (e.target.id === "gAmt") { e.preventDefault(); document.getElementById("gAdd").click(); }
 });
 document.addEventListener("change", e => {
+  if (e.target.id === "fUntil") { db.until = e.target.value; save(); render(); const n = monthName(db.until); toast(`Se ven los meses hasta ${n}`); return; }
   const f = e.target.dataset?.filt; if (!f) return;
   filt[f] = e.target.value; render();
 });
