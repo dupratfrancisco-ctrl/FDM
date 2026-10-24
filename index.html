@@ -136,6 +136,13 @@ nav.tabs button[aria-current=page]{color:var(--ink)}
 .ahead{display:grid;grid-template-columns:1fr auto;gap:6px 14px;font-size:.95rem;color:var(--muted)}
 .ahead b{color:var(--ink)}.ahead b.neg{color:var(--red)}
 .tag.done{background:var(--green-2);color:var(--green)}
+/* Monto en pesos o dólares */
+.amt{display:flex;gap:8px}.amt input{flex:1;min-width:0}
+.seg.cur{flex:0 0 auto}.seg.cur button{padding:9px 12px;flex:0 0 auto}
+.curbtn{flex:0 0 auto;min-width:58px;border-radius:10px;font-weight:800;background:var(--paper);box-shadow:inset 0 0 0 1.5px var(--line-2)}
+.curbtn.usd{background:var(--green-2);color:var(--green);box-shadow:inset 0 0 0 1.5px var(--green)}
+.fxl{display:grid;grid-template-columns:1fr auto;gap:8px 14px}
+.fxl .on{font-weight:700;color:var(--green)}
 .edit{font-size:.82rem;font-weight:700;color:var(--green);text-decoration:underline;padding:2px 0 2px 8px}
 button.chip{text-align:left;font:inherit;cursor:pointer}
 /* Anotar rápido */
@@ -183,6 +190,76 @@ const guessCat = (desc, amount) => {
   for (const [c, re] of GUESS) if (re.test(desc) || re.test(plain)) return c;
   return amount > 0 ? "Transferencias" : "Otros";
 };
+
+// ---------- Dólar: cotización de internet para anotar en dólares ----------
+const FX_KEY = "fdm:fx", FX_NAMES = { oficial: "Oficial", tarjeta: "Tarjeta", blue: "Blue", bolsa: "MEP", contadoconliqui: "CCL", mayorista: "Mayorista", cripto: "Cripto" };
+let fx = null;
+try { fx = JSON.parse(localStorage.getItem(FX_KEY)); } catch {}
+const fxCasa = () => db.fxCasa || "tarjeta";
+// Precio de venta del dólar elegido (o el que pusiste a mano); si ese no está, el oficial
+function usdRate() {
+  if (db.fxManual) return db.fxManual;
+  const l = fx?.list || [];
+  return (l.find(x => x.casa === fxCasa()) || l.find(x => x.casa === "oficial"))?.venta || null;
+}
+const fxLabel = () => db.fxManual ? "dólar puesto a mano" : `dólar ${(FX_NAMES[fxCasa()] || fxCasa()).toLowerCase()}`;
+function conv(v, from, to) {
+  if (from === to) return v;
+  const r = usdRate(); if (!r) return null;
+  if (from === "USD" && to === "ARS") return round2(v * r);
+  if (from === "ARS" && to === "USD") return round2(v / r);
+  return null;
+}
+async function getJSON(url) { const c = new AbortController(), t = setTimeout(() => c.abort(), 9000); try { const r = await fetch(url, { cache: "no-store", signal: c.signal }); if (!r.ok) throw new Error(r.status); return await r.json(); } finally { clearTimeout(t); } }
+async function fetchFx() {
+  let list = null;
+  try {
+    list = (await getJSON("https://dolarapi.com/v1/dolares")).filter(x => x && x.casa && x.venta).map(x => ({ casa: x.casa, nombre: FX_NAMES[x.casa] || x.nombre, compra: x.compra, venta: x.venta, fecha: x.fechaActualizacion }));
+  } catch {}
+  if (!list?.length) {
+    try {
+      const d = await getJSON("https://api.bluelytics.com.ar/v2/latest");
+      list = [["oficial", d.oficial], ["blue", d.blue]].filter(([, v]) => v?.value_sell).map(([casa, v]) => ({ casa, nombre: FX_NAMES[casa], compra: v.value_buy, venta: v.value_sell, fecha: d.last_update }));
+    } catch {}
+  }
+  if (!list?.length) return false;
+  fx = { at: Date.now(), list };
+  try { localStorage.setItem(FX_KEY, JSON.stringify(fx)); } catch {}
+  refreshUsd(); render();
+  return true;
+}
+// Lo planeado en dólares sigue al dólar del día
+function refreshUsd() {
+  let ch = false;
+  for (const p of db.planned) if (p.usd) { const a = conv(p.usd, "USD", p.currency); if (a != null && a !== p.amount) { p.amount = a; ch = true; } }
+  if (ch) save();
+}
+const usdNote = o => o?.cur === "USD" ? `US$ ${new Intl.NumberFormat("es-AR", { maximumFractionDigits: 2 }).format(o.amount)} a ${money(o.rate, "ARS")}` : "";
+// Campo de monto con $ / US$: muestra la conversión y devuelve el monto en la moneda de la cuenta
+const amtHTML = (val, label = "Monto") => `<div class="field"><span class="label">${label}</span><div class="amt"><input type="text" inputmode="decimal" id="fAmt" placeholder="0,00" value="${val ? new Intl.NumberFormat("es-AR", { maximumFractionDigits: 2 }).format(val) : ""}"><div class="seg cur" id="fAmtCur"><button type="button" data-c="ARS">$</button><button type="button" data-c="USD">US$</button></div></div><p class="muted small" id="fFx"></p></div>`;
+function bindAmt(b, acctCur, startCur) {
+  let cur = startCur;
+  const inp = b.querySelector("#fAmt"), segs = b.querySelectorAll("#fAmtCur button"), out = b.querySelector("#fFx");
+  const show = () => {
+    segs.forEach(x => x.setAttribute("aria-pressed", x.dataset.c === cur));
+    const v = Math.abs(parseAmount(inp.value)), ac = acctCur();
+    if (cur === ac) { out.textContent = ""; return; }
+    const r = usdRate();
+    if (!r) { out.textContent = "No pude ver a cuánto está el dólar. Ponelo a mano en Cuentas → Dólar."; return; }
+    out.textContent = v ? `≈ ${money(conv(v, cur, ac), ac)} (${fxLabel()} ${money(r, "ARS")})` : `Se pasa a ${ac === "ARS" ? "pesos" : ac} con el ${fxLabel()} (${money(r, "ARS")}).`;
+  };
+  segs.forEach(x => (x.onclick = () => { cur = x.dataset.c; show(); }));
+  inp.addEventListener("input", show); show();
+  return {
+    show,
+    read() {
+      const v = Math.abs(parseAmount(inp.value)); if (!v) return null;
+      const ac = acctCur(); if (cur === ac) return { amount: v };
+      const c = conv(v, cur, ac); if (c == null) return { error: "No pude ver a cuánto está el dólar. Ponelo a mano en Cuentas → Dólar." };
+      return { amount: c, usd: cur === "USD" ? v : null, orig: { amount: v, cur, rate: usdRate(), casa: fxLabel() } };
+    },
+  };
+}
 
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 const todayISO = () => { const d = new Date(); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().slice(0, 10); };
@@ -321,21 +398,40 @@ function quickCard() {
   if (!db.accounts.length) return "";
   const chips = frequent();
   return `<section class="card quick" aria-label="Anotar rápido">
-    <div class="qrow"><input type="text" inputmode="decimal" id="qAmt" placeholder="$ 0" aria-label="Monto" enterkeyhint="next"><input type="text" id="qDesc" placeholder="¿En qué?" aria-label="En qué" maxlength="80" enterkeyhint="done"></div>
+    <div class="qrow"><button type="button" class="curbtn${qCur === "USD" ? " usd" : ""}" data-act="qcur" aria-label="Moneda: tocá para cambiar">${qCur === "USD" ? "US$" : "$"}</button><input type="text" inputmode="decimal" id="qAmt" placeholder="0" aria-label="Monto" enterkeyhint="next" style="flex:0 1 28%;min-width:72px"><input type="text" id="qDesc" placeholder="¿En qué?" aria-label="En qué" maxlength="80" enterkeyhint="done"></div>
+    <p class="muted small" id="qFx"${qCur === "USD" ? "" : " hidden"}></p>
     ${chips.length ? `<div class="chips">${chips.map((c, i) => `<button data-chip="${i}">${esc(c.desc)}</button>`).join("")}</div>` : ""}
     <div class="qrow">${db.accounts.length > 1 ? `<select id="qAcct" aria-label="Cuenta">${accountOptions(lastAccount())}</select>` : ""}<button class="btn" data-act="quick">Ya lo pagué</button><button class="btn" data-act="quickplan" style="background:var(--amber)">Lo voy a pagar</button></div>
     <p class="muted small">Si es plata que entra (sueldo, una transferencia), poné + adelante del monto.</p></section>`;
 }
+let qCur = "ARS";
+// Monto del anotador rápido en la moneda de la cuenta (convierte si está en US$)
+function quickAmount(acc, raw) {
+  const v = Math.abs(parseAmount(raw)); if (!v) return null;
+  const ac = acc?.currency || "ARS";
+  if (qCur === ac) return { amount: v };
+  const c = conv(v, qCur, ac);
+  if (c == null) { toast("No pude ver a cuánto está el dólar: ponelo en Cuentas → Dólar"); return { error: true }; }
+  return { amount: c, usd: qCur === "USD" ? v : null, orig: { amount: v, cur: qCur, rate: usdRate(), casa: fxLabel() } };
+}
+function quickFx() {
+  const el = document.getElementById("qFx"); if (!el) return;
+  el.hidden = qCur !== "USD"; if (el.hidden) return;
+  const acc = acctById(document.getElementById("qAcct")?.value || lastAccount()), r = usdRate(), v = Math.abs(parseAmount(document.getElementById("qAmt").value));
+  el.textContent = !r ? "No pude ver a cuánto está el dólar: ponelo en Cuentas → Dólar." : v ? `US$ ${new Intl.NumberFormat("es-AR").format(v)} ≈ ${money(conv(v, "USD", acc?.currency || "ARS"), acc?.currency || "ARS")} (${fxLabel()} ${money(r, "ARS")})` : `En dólares: se pasa a pesos con el ${fxLabel()} (${money(r, "ARS")}).`;
+}
 function quickPlan() {
   const amtEl = document.getElementById("qAmt"), descEl = document.getElementById("qDesc");
-  const amt = Math.abs(parseAmount(amtEl.value));
-  if (!amt) { toast("Poné el monto"); amtEl.focus(); return; }
-  const desc = descEl.value.trim();
   const a = acctById(document.getElementById("qAcct")?.value || lastAccount());
+  const qa = quickAmount(a, amtEl.value);
+  if (!qa) { toast("Poné el monto"); amtEl.focus(); return; }
+  if (qa.error) return;
+  const amt = qa.amount;
+  const desc = descEl.value.trim();
   // Un cobro casi siempre tiene día y se repite (el sueldo): se completa en el formulario
   if (amtEl.value.trim().startsWith("+")) return formPlan(null, { kind: "in", desc: desc || "Sueldo", amount: amt, monthly: !desc || /sueldo|salario|haberes/i.test(desc), accountId: a?.id });
   if (!desc) { toast("Escribí qué vas a pagar"); descEl.focus(); return; }
-  const p = { id: uid(), created: Date.now(), kind: "out", desc, amount: amt, currency: a?.currency || "ARS", due: "", cat: guessCat(desc, -1), accountId: a?.id || "", monthly: false };
+  const p = { id: uid(), created: Date.now(), kind: "out", desc, amount: amt, currency: a?.currency || "ARS", due: "", cat: guessCat(desc, -1), accountId: a?.id || "", monthly: false, ...(qa.usd ? { usd: qa.usd } : {}) };
   db.planned.push(p);
   save(); render();
   const o = projection(p.currency).flatMap(m => m.items).find(o => o.p === p);
@@ -343,16 +439,19 @@ function quickPlan() {
 }
 function quickAdd() {
   const amtEl = document.getElementById("qAmt"), descEl = document.getElementById("qDesc");
-  const raw = amtEl.value.trim(), amt = Math.abs(parseAmount(raw));
-  if (!amt) { toast("Poné el monto"); amtEl.focus(); return; }
+  const raw = amtEl.value.trim();
+  const accountId = document.getElementById("qAcct")?.value || lastAccount();
+  const qa = quickAmount(acctById(accountId), raw);
+  if (!qa) { toast("Poné el monto"); amtEl.focus(); return; }
+  if (qa.error) return;
+  const amt = qa.amount;
   const desc = descEl.value.trim();
   const chip = frequent().find(c => norm(c.desc) === norm(desc));
   const income = raw.startsWith("+");
-  const accountId = document.getElementById("qAcct")?.value || lastAccount();
-  db.txs.push({ id: uid(), created: Date.now(), src: "manual", accountId, date: todayISO(), amount: income ? amt : -amt, desc, cat: chip ? chip.cat : guessCat(desc, income ? 1 : -1) });
+  db.txs.push({ id: uid(), created: Date.now(), src: "manual", accountId, date: todayISO(), amount: income ? amt : -amt, desc, cat: chip ? chip.cat : guessCat(desc, income ? 1 : -1), ...(qa.orig ? { orig: qa.orig } : {}) });
   rememberAccount(accountId);
   save(); render();
-  toast(`Anotado: ${income ? "+" : "−"} ${money(amt, acctById(accountId)?.currency)}${desc ? " en " + desc : ""}`);
+  toast(`Anotado: ${income ? "+" : "−"} ${money(amt, acctById(accountId)?.currency)}${qa.orig ? ` (${usdNote(qa.orig)})` : ""}${desc ? " en " + desc : ""}`);
 }
 
 const byDateDesc = (a, b) => b.date.localeCompare(a.date) || b.created - a.created;
@@ -360,7 +459,7 @@ function txRow(t) {
   const a = acctById(t.accountId);
   const cls = t.amount < 0 ? "out" : "in";
   const sign = t.amount < 0 ? "− " : "+ ";
-  return `<button class="item" data-tx="${t.id}"><span class="t">${esc(t.desc || t.cat)}</span><span class="a num ${cls}">${sign}${money(Math.abs(t.amount), a?.currency)}</span><span class="s">${esc(t.cat)} · ${esc(a?.name || "Sin cuenta")} · ${shortDate(t.date)}</span></button>`;
+  return `<button class="item" data-tx="${t.id}"><span class="t">${esc(t.desc || t.cat)}</span><span class="a num ${cls}">${sign}${money(Math.abs(t.amount), a?.currency)}</span><span class="s">${esc(t.cat)} · ${esc(a?.name || "Sin cuenta")} · ${shortDate(t.date)}${t.orig ? " · " + usdNote(t.orig) : ""}</span></button>`;
 }
 
 function viewGastos() {
@@ -440,7 +539,7 @@ function occRow(o) {
   const p = o.p, date = o.date || (o.next ? null : p.due), late = !o.next && date && date < todayISO();
   const when = date ? `<span class="tag ${late ? "late" : isIn(p) ? "done" : ""}">${late ? "vencido " : ""}${shortDate(date)}</span>` : "";
   const left = db.accounts.length && o.mk === monthKey(todayISO()) ? `<span style="color:${o.left < 0 ? "var(--red)" : "var(--green)"};font-weight:600">${o.left < 0 ? "te faltan " + money(-o.left, p.currency) : "te quedan " + money(o.left, p.currency)}</span> · ` : "";
-  return `<button class="item" data-plan="${p.id}" data-mk="${o.mk}"><span class="t">${esc(p.desc)}${when}</span><span class="a num ${isIn(p) ? "in" : "plan"}">${isIn(p) ? "+ " : "− "}${money(Math.abs(o.amount), p.currency)}</span><span class="s">${left}${isIn(p) ? "cobro" : esc(p.cat)}${o.changed ? " · cambiado este mes" : p.monthly ? " · todos los meses" : ""}</span></button>`;
+  return `<button class="item" data-plan="${p.id}" data-mk="${o.mk}"><span class="t">${esc(p.desc)}${when}</span><span class="a num ${isIn(p) ? "in" : "plan"}">${isIn(p) ? "+ " : "− "}${money(Math.abs(o.amount), p.currency)}</span><span class="s">${left}${isIn(p) ? "cobro" : esc(p.cat)}${p.usd ? ` · US$ ${new Intl.NumberFormat("es-AR").format(p.usd)}` : ""}${o.changed ? " · cambiado este mes" : p.monthly ? " · todos los meses" : ""}</span></button>`;
 }
 const groupsList = () => db.groups || (db.groups = []);
 const groupById = id => groupsList().find(g => g.id === id);
@@ -528,6 +627,17 @@ function resetMonth(mk) {
   save(); render(); toast(removeView ? `${mes} borrado` : `${mes} quedó como los demás`);
 }
 
+function fxCard() {
+  const l = fx?.list || [], r = usdRate();
+  const at = fx?.at ? new Date(fx.at).toLocaleString("es-AR", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "";
+  const opts = [...new Set(["tarjeta", "oficial", "blue", "bolsa", ...l.map(x => x.casa)])];
+  return `<section class="card"><h2>Dólar</h2>
+    <p class="muted small">Cuando anotás algo en US$, fdm lo pasa a pesos con esta cotización (precio de venta). Para lo que pagás con la tarjeta en dólares, el que corresponde es el <b>tarjeta</b>.</p>
+    ${l.length ? `<div class="fxl">${l.filter(x => FX_NAMES[x.casa] && x.casa !== "mayorista").map(x => `<span class="${!db.fxManual && x.casa === fxCasa() ? "on" : ""}">${esc(FX_NAMES[x.casa])}</span><b class="num ${!db.fxManual && x.casa === fxCasa() ? "on" : ""}">${money(x.venta, "ARS")}</b>`).join("")}</div>` : `<p class="small">Todavía no pude ver la cotización. Fijate que tengas internet y tocá <b>Actualizar</b>, o ponela a mano.</p>`}
+    <label class="field"><span class="label">Usar para convertir</span><select id="fxCasa">${opts.map(c => `<option value="${c}" ${!db.fxManual && c === fxCasa() ? "selected" : ""}>Dólar ${esc((FX_NAMES[c] || c).toLowerCase())}</option>`).join("")}${db.fxManual ? `<option selected value="">A mano: ${money(db.fxManual, "ARS")}</option>` : ""}</select></label>
+    <div class="row"><button class="btn ghost small" data-act="fxload">Actualizar</button><button class="btn ghost small" data-act="fxmanual">${db.fxManual ? "Cambiar el de a mano" : "Poner a mano"}</button></div>
+    ${r ? `<p class="muted small">Ahora: ${fxLabel()} ${money(r, "ARS")}${at && !db.fxManual ? ` · actualizado ${at}` : ""}</p>` : ""}</section>`;
+}
 function viewCuentas() {
   let html = `<section class="card"><div class="cardhead"><h2>Tus cuentas</h2><button class="btn small" data-act="addAccount">Agregar</button></div><div class="list">`;
   if (!db.accounts.length) html += `<p class="empty">Agregá cada banco donde tenés plata, Mercado Pago o la billetera en efectivo.</p>`;
@@ -538,6 +648,7 @@ function viewCuentas() {
       <div class="actions"><button class="btn ghost small" data-import="${a.id}">Importar movimientos</button><button class="btn ghost small" data-adjust="${a.id}">Corregir saldo</button><button class="btn ghost small" data-editacct="${a.id}">Editar</button></div></div>`;
   }
   html += `</div></section>
+  ${fxCard()}
   <section class="card"><h2>Traer los movimientos del banco</h2>
     <p class="small">Si tu banco no deja exportar (como Ualá), sacá <b>capturas de pantalla</b> de la lista de movimientos y subilas en <b>Importar movimientos</b>: fdm lee las imágenes en el celular, sin mandarlas a ningún lado. También acepta el resumen en PDF, un CSV o texto pegado. Los que ya estaban no se repiten.</p></section>
   <section class="card"><h2>Copia de seguridad</h2>
@@ -665,7 +776,7 @@ function formTx(t) {
   let kind = t && t.amount > 0 ? "in" : "out";
   openSheet(`<h2>${isNew ? "Anotar" : "Editar"} movimiento</h2>
     <div class="seg" id="fKind"><button data-k="out">Gasto</button><button data-k="in">Ingreso</button></div>
-    <label class="field"><span class="label">Monto</span><input type="text" inputmode="decimal" id="fAmt" placeholder="0,00" value="${t ? String(Math.abs(t.amount)).replace(".", ",") : ""}"></label>
+    ${amtHTML(t ? (t.orig ? t.orig.amount : Math.abs(t.amount)) : "")}
     <label class="field"><span class="label">Qué fue</span><input type="text" id="fDesc" placeholder="Súper, nafta, cena…" value="${esc(t?.desc || "")}" maxlength="80"></label>
     <div class="row">
       <label class="field"><span class="label">Categoría</span><select id="fCat">${catOptions(t?.cat || "Otros")}</select></label>
@@ -683,14 +794,22 @@ function formTx(t) {
     let catTouched = !isNew;
     cat.onchange = () => (catTouched = true);
     desc.oninput = () => { if (!catTouched) cat.value = guessCat(desc.value, kind === "in" ? 1 : -1); };
+    const acctSel = b.querySelector("#fAcct"), acur = () => acctById(acctSel.value)?.currency || "ARS";
+    const amtW = bindAmt(b, acur, t?.orig?.cur || acur());
+    acctSel.addEventListener("change", amtW.show);
     b.querySelector("#fOk").onclick = () => {
-      const amt = parseAmount(b.querySelector("#fAmt").value);
+      const r = amtW.read();
       const err = b.querySelector("#fErr");
-      if (isNaN(amt) || amt === 0) { err.textContent = "Poné un monto"; err.hidden = false; return; }
+      if (!r) { err.textContent = "Poné un monto"; err.hidden = false; return; }
+      if (r.error) { err.textContent = r.error; err.hidden = false; return; }
+      // Si no cambió lo que pusiste en dólares, se mantiene la cotización de ese día
+      const keep = t?.orig && r.orig && t.orig.amount === r.orig.amount && t.orig.cur === r.orig.cur && t.accountId === acctSel.value;
+      const amt = keep ? Math.abs(t.amount) : r.amount;
       const date = b.querySelector("#fDate").value || todayISO();
-      const rec = { accountId: b.querySelector("#fAcct").value, amount: kind === "out" ? -Math.abs(amt) : Math.abs(amt), desc: desc.value.trim(), cat: cat.value, date };
+      const rec = { accountId: acctSel.value, amount: kind === "out" ? -Math.abs(amt) : Math.abs(amt), desc: desc.value.trim(), cat: cat.value, date, orig: keep ? t.orig : r.orig || undefined };
+      if (!rec.orig) delete rec.orig;
       if (isNew) db.txs.push({ id: uid(), created: Date.now(), src: "manual", ...rec });
-      else Object.assign(t, rec);
+      else { Object.assign(t, rec); if (!rec.orig) delete t.orig; }
       rememberAccount(rec.accountId);
       save(); closeSheet(); render(); toast(isNew ? "Anotado" : "Guardado");
     };
@@ -711,15 +830,11 @@ function formPlan(p, preset = {}) {
   const isNew = !p;
   const v = p || preset;
   let kind = v.kind === "in" ? "in" : "out";
-  const curs = [...new Set(db.accounts.map(a => a.currency).concat("ARS", "USD"))];
   openSheet(`<h2>${isNew ? "Para más adelante" : p.monthly ? "Editar todos los meses" : "Editar"}</h2>
     ${!isNew && p.monthly ? `<p class="muted small">Cambia todos los meses, menos los que cambiaste aparte.</p>` : ""}
     <div class="seg" id="fKind"><button data-k="out">Voy a pagar</button><button data-k="in">Voy a cobrar</button></div>
     <label class="field"><span class="label">Qué es</span><input type="text" id="fDesc" placeholder="Alquiler, sueldo, service del auto…" value="${esc(v.desc || "")}" maxlength="80"></label>
-    <div class="row">
-      <label class="field"><span class="label">Monto</span><input type="text" inputmode="decimal" id="fAmt" placeholder="0,00" value="${v.amount ? String(v.amount).replace(".", ",") : ""}"></label>
-      <label class="field" style="flex:0 1 110px"><span class="label">Moneda</span><select id="fCur">${curs.map(c => `<option ${c === (p?.currency || "ARS") ? "selected" : ""}>${c}</option>`).join("")}</select></label>
-    </div>
+    ${amtHTML(v.usd || v.amount || "")}
     <div class="row">
       <label class="field" id="fDueWrap"><span class="label">Qué día</span><input type="date" id="fDue" value="${v.due || ""}"></label>
       <label class="field" id="fDayWrap"><span class="label">Día de cada mes</span><input type="number" inputmode="numeric" min="1" max="31" id="fDay" value="${v.due ? +v.due.slice(8) : ""}" placeholder="1 a 31"></label>
@@ -730,34 +845,36 @@ function formPlan(p, preset = {}) {
     <p class="err" id="fErr" hidden></p>
     ${isNew ? `<button class="btn" id="fOk">Agregar</button>` : `<button class="btn" id="fPaid" style="background:var(--green)"></button><div class="row"><button class="btn ghost" id="fOk">Guardar cambios</button><button class="btn danger" id="fDel">Borrar</button></div>`}
     <button class="btn ghost" data-close>Cancelar</button>`, b => {
-    const desc = b.querySelector("#fDesc"), cat = b.querySelector("#fCat"), acct = b.querySelector("#fAcct"), cur = b.querySelector("#fCur");
+    const desc = b.querySelector("#fDesc"), cat = b.querySelector("#fCat"), acct = b.querySelector("#fAcct");
+    // Va en la moneda de la cuenta; si lo ponés en dólares se guarda cuántos y sigue al dólar del día
+    const planCur = () => acctById(acct.value)?.currency || p?.currency || "ARS";
+    const amtW = bindAmt(b, planCur, v.usd ? "USD" : planCur());
     let catTouched = !isNew;
     const segs = b.querySelectorAll("#fKind button"), paidBtn = b.querySelector("#fPaid");
     const paint = () => { segs.forEach(s => s.setAttribute("aria-pressed", s.dataset.k === kind)); if (paidBtn) paidBtn.textContent = kind === "in" ? "Ya lo cobré" : "Ya lo pagué"; };
     const autoCat = () => { if (catTouched) return; const g = guessCat(desc.value, kind === "in" ? 1 : -1); cat.value = kind === "in" && g === "Transferencias" ? "Sueldo" : g; };
     segs.forEach(s => (s.onclick = () => { kind = s.dataset.k; autoCat(); paint(); }));
     paint();
-    const a0 = acctById(acct.value); if (isNew && a0) cur.value = a0.currency;
     cat.onchange = () => (catTouched = true);
     desc.oninput = autoCat;
-    acct.onchange = () => { const a = acctById(acct.value); if (a) cur.value = a.currency; };
+    acct.onchange = amtW.show;
     const mon = b.querySelector("#fMon");
     const showDay = () => { b.querySelector("#fDueWrap").hidden = mon.checked; b.querySelector("#fDayWrap").hidden = !mon.checked; };
     mon.onchange = showDay; showDay();
     const read = () => {
-      const amt = parseAmount(b.querySelector("#fAmt").value);
+      const r = amtW.read();
       const err = b.querySelector("#fErr");
       if (!desc.value.trim()) { err.textContent = "Escribí qué es"; err.hidden = false; return null; }
-      if (isNaN(amt) || amt <= 0) { err.textContent = "Poné un monto"; err.hidden = false; return null; }
-      const a = acctById(acct.value);
-      if (a && a.currency !== cur.value) { err.textContent = `${a.name} es en ${a.currency}`; err.hidden = false; return null; }
+      if (!r) { err.textContent = "Poné un monto"; err.hidden = false; return null; }
+      if (r.error) { err.textContent = r.error; err.hidden = false; return null; }
+      const amt = r.amount;
       let due = b.querySelector("#fDue").value;
       if (mon.checked) {
         const day = +b.querySelector("#fDay").value;
         if (b.querySelector("#fDay").value && (!Number.isInteger(day) || day < 1 || day > 31)) { err.textContent = "El día tiene que ser de 1 a 31"; err.hidden = false; return null; }
         due = day ? nextDue(day, p?.id) : "";
       }
-      return { kind, desc: desc.value.trim(), amount: amt, currency: cur.value, due, cat: cat.value, accountId: acct.value, monthly: mon.checked };
+      return { kind, desc: desc.value.trim(), amount: amt, currency: planCur(), usd: r.usd || null, due, cat: cat.value, accountId: acct.value, monthly: mon.checked };
     };
     b.querySelector("#fOk").onclick = () => {
       const rec = read(); if (!rec) return;
@@ -1342,6 +1459,14 @@ document.addEventListener("click", e => {
   else if ("close" in d) closeSheet();
   else if (d.tx) formTx(db.txs.find(t => t.id === d.tx));
   else if (d.carry) formCarry(d.carry, d.cur || "ARS");
+  else if (d.act === "qcur") { qCur = qCur === "USD" ? "ARS" : "USD"; el.textContent = qCur === "USD" ? "US$" : "$"; el.classList.toggle("usd", qCur === "USD"); quickFx(); document.getElementById("qAmt").focus(); }
+  else if (d.act === "fxload") { el.disabled = true; el.textContent = "Buscando…"; fetchFx().then(ok => { if (!ok) { render(); toast("No pude ver la cotización. ¿Tenés internet?"); } else toast("Dólar actualizado"); }); }
+  else if (d.act === "fxmanual") {
+    const v = prompt("¿A cuánto está el dólar? (dejalo vacío para volver a usar el de internet)", db.fxManual ? String(db.fxManual) : "");
+    if (v === null) return;
+    const n = Math.abs(parseAmount(v));
+    db.fxManual = n || null; refreshUsd(); save(); render(); toast(n ? `Dólar a mano: ${money(n, "ARS")}` : "Uso el dólar de internet");
+  }
   else if (d.resetmonth) resetMonth(d.resetmonth);
   else if (d.act === "addmonth") {
     let last = monthKey(todayISO());
@@ -1382,6 +1507,7 @@ document.addEventListener("click", e => {
   else if (d.act === "wipe") wipe();
 });
 document.addEventListener("input", e => {
+  if (e.target.id === "qAmt") quickFx();
   if (e.target.id !== "qAmt") return;
   const inc = e.target.value.trim().startsWith("+");
   document.querySelector("[data-act=quick]").textContent = inc ? "Ya lo cobré" : "Ya lo pagué";
@@ -1395,6 +1521,8 @@ document.addEventListener("keydown", e => {
   else if (e.target.id === "gAmt") { e.preventDefault(); document.getElementById("gAdd").click(); }
 });
 document.addEventListener("change", e => {
+  if (e.target.id === "fxCasa") { if (e.target.value) { db.fxCasa = e.target.value; db.fxManual = null; } refreshUsd(); save(); render(); return; }
+  if (e.target.id === "qAcct") quickFx();
   if (e.target.id === "fUntil") { db.until = e.target.value; save(); render(); const n = monthName(db.until); toast(`Se ven los meses hasta ${n}`); return; }
   const f = e.target.dataset?.filt; if (!f) return;
   filt[f] = e.target.value; render();
@@ -1408,6 +1536,11 @@ document.getElementById("fab").onclick = () => {
 addEventListener("storage", e => { if (e.key === KEY) { db = load(); render(); } });
 
 render();
+// El dólar se busca al abrir, cada media hora y al volver a la app si pasó más de media hora
+const fxOld = () => !fx?.at || Date.now() - fx.at > 30 * 60 * 1000;
+if (fxOld()) fetchFx(); else refreshUsd();
+setInterval(() => { if (fxOld()) fetchFx(); }, 5 * 60 * 1000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden && fxOld()) fetchFx(); });
 if ("serviceWorker" in navigator && location.protocol === "https:") navigator.serviceWorker.register("sw.js", { updateViaCache: "none" }).catch(() => {});
 </script>
 </body>
