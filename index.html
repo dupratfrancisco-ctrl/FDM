@@ -205,7 +205,7 @@ function usdRate(tax = fxTaxDefault()) {
   if (tax) return l.find(x => x.casa === "tarjeta")?.venta || (of ? round2(of * TAX) : null);
   return l.find(x => x.casa === fxBase())?.venta || of || null;
 }
-const fxLabel = (tax = fxTaxDefault()) => db.fxManual ? (tax ? "dólar a mano + impuestos" : "dólar a mano") : tax ? "dólar tarjeta, con impuestos" : `dólar ${(FX_NAMES[fxBase()] || fxBase()).toLowerCase()}, sin impuestos`;
+const fxLabel = (tax = fxTaxDefault()) => tax ? "con impuestos" : "sin impuestos";
 function conv(v, from, to, tax = fxTaxDefault()) {
   if (from === to) return v;
   const r = usdRate(tax); if (!r) return null;
@@ -251,7 +251,7 @@ function bindAmt(b, acctCur, startCur, startTax = fxTaxDefault()) {
     if (cur === ac) { out.textContent = ""; return; }
     const r = usdRate(tax);
     if (!r) { out.textContent = "No pude ver a cuánto está el dólar. Ponelo a mano en Cuentas → Dólar."; return; }
-    out.textContent = v ? `≈ ${money(conv(v, cur, ac, tax), ac)} (${fxLabel(tax)}: ${money(r, "ARS")})` : `Se pasa a ${ac === "ARS" ? "pesos" : ac} con el ${fxLabel(tax)} (${money(r, "ARS")}).`;
+    out.textContent = v ? `≈ ${money(conv(v, cur, ac, tax), ac)} (${fxLabel(tax)}: ${money(r, "ARS")})` : `Se pasa a ${ac === "ARS" ? "pesos" : ac} ${fxLabel(tax)}: ${money(r, "ARS")} el dólar.`;
   };
   segs.forEach(x => (x.onclick = () => { cur = x.dataset.c; show(); }));
   taxSeg.querySelectorAll("button").forEach(x => (x.onclick = () => { tax = x.dataset.t === "1"; db.fxTax = tax; save(); show(); }));
@@ -428,7 +428,7 @@ function quickFx() {
   el.hidden = qCur !== "USD"; if (ts) ts.hidden = el.hidden; if (el.hidden) return;
   if (ts) ts.querySelectorAll("button").forEach(x => x.setAttribute("aria-pressed", (x.dataset.qtax === "1") === qTax));
   const acc = acctById(document.getElementById("qAcct")?.value || lastAccount()), r = usdRate(qTax), v = Math.abs(parseAmount(document.getElementById("qAmt").value));
-  el.textContent = !r ? "No pude ver a cuánto está el dólar: ponelo en Cuentas → Dólar." : v ? `US$ ${new Intl.NumberFormat("es-AR").format(v)} ≈ ${money(conv(v, "USD", acc?.currency || "ARS", qTax), acc?.currency || "ARS")} (${fxLabel(qTax)}: ${money(r, "ARS")})` : `En dólares: se pasa a pesos con el ${fxLabel(qTax)} (${money(r, "ARS")}).`;
+  el.textContent = !r ? "No pude ver a cuánto está el dólar: ponelo en Cuentas → Dólar." : v ? `US$ ${new Intl.NumberFormat("es-AR").format(v)} ≈ ${money(conv(v, "USD", acc?.currency || "ARS", qTax), acc?.currency || "ARS")} (${fxLabel(qTax)}: ${money(r, "ARS")})` : `En dólares: se pasa a pesos ${fxLabel(qTax)}: ${money(r, "ARS")} el dólar.`;
 }
 function quickPlan() {
   const amtEl = document.getElementById("qAmt"), descEl = document.getElementById("qDesc");
@@ -643,9 +643,9 @@ function fxCard() {
   const opts = [...new Set(["oficial", "blue", "bolsa", ...l.map(x => x.casa)])].filter(c => c !== "tarjeta" && c !== "mayorista");
   const on = c => !db.fxManual && (c === "tarjeta" || c === fxBase()) ? "on" : "";
   return `<section class="card"><h2>Dólar</h2>
-    <p class="muted small">Cuando anotás algo en US$ elegís <b>con impuestos</b> (dólar tarjeta: oficial + 30%, lo que te cobran al pagar con la tarjeta) o <b>sin impuestos</b> (por ejemplo si pagás con dólares que ya tenés).</p>
+    <p class="muted small">Cuando anotás algo en US$ elegís <b>con impuestos</b> (lo que te cobran al pagar con la tarjeta) o <b>sin impuestos</b>.</p>
     ${l.length ? `<div class="fxl">${l.filter(x => FX_NAMES[x.casa] && x.casa !== "mayorista").map(x => `<span class="${on(x.casa)}">${esc(FX_NAMES[x.casa])}${x.casa === "tarjeta" ? " (con impuestos)" : ""}</span><b class="num ${on(x.casa)}">${money(x.venta, "ARS")}</b>`).join("")}</div>` : `<p class="small">Todavía no pude ver la cotización. Fijate que tengas internet y tocá <b>Actualizar</b>, o ponela a mano.</p>`}
-    <label class="field"><span class="label">Sin impuestos, usar</span><select id="fxCasa">${opts.map(c => `<option value="${c}" ${!db.fxManual && c === fxBase() ? "selected" : ""}>Dólar ${esc((FX_NAMES[c] || c).toLowerCase())}</option>`).join("")}${db.fxManual ? `<option selected value="">A mano: ${money(db.fxManual, "ARS")}</option>` : ""}</select></label>
+    <label class="field"><span class="label">Cotización sin impuestos</span><select id="fxCasa">${opts.map(c => `<option value="${c}" ${!db.fxManual && c === fxBase() ? "selected" : ""}>Dólar ${esc((FX_NAMES[c] || c).toLowerCase())}</option>`).join("")}${db.fxManual ? `<option selected value="">A mano: ${money(db.fxManual, "ARS")}</option>` : ""}</select></label>
     <div class="row"><button class="btn ghost small" data-act="fxload">Actualizar</button><button class="btn ghost small" data-act="fxmanual">${db.fxManual ? "Cambiar el de a mano" : "Poner a mano"}</button></div>
     ${rc ? `<p class="muted small">Ahora: con impuestos ${money(rc, "ARS")} · sin impuestos ${money(rs, "ARS")}${at && !db.fxManual ? ` · actualizado ${at}` : ""}</p>` : ""}</section>`;
 }
