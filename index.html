@@ -403,12 +403,10 @@ function frequent() {
 }
 function quickCard() {
   if (!db.accounts.length) return "";
-  const chips = frequent();
   return `<section class="card quick" aria-label="Anotar rápido">
     <div class="qrow"><button type="button" class="curbtn${qCur === "USD" ? " usd" : ""}" data-act="qcur" aria-label="Moneda: tocá para cambiar">${qCur === "USD" ? "US$" : "$"}</button><input type="text" inputmode="decimal" id="qAmt" placeholder="0" aria-label="Monto" enterkeyhint="next" style="flex:0 1 28%;min-width:72px"><input type="text" id="qDesc" placeholder="¿En qué?" aria-label="En qué" maxlength="80" enterkeyhint="done"></div>
     <div class="seg" id="qTax"${qCur === "USD" ? "" : " hidden"}><button type="button" data-qtax="1" aria-pressed="${qTax}">Con impuestos</button><button type="button" data-qtax="0" aria-pressed="${!qTax}">Sin impuestos</button></div>
     <p class="muted small" id="qFx"${qCur === "USD" ? "" : " hidden"}></p>
-    ${chips.length ? `<div class="chips">${chips.map((c, i) => `<button data-chip="${i}">${esc(c.desc)}</button>`).join("")}</div>` : ""}
     <div class="qrow">${db.accounts.length > 1 ? `<select id="qAcct" aria-label="Cuenta">${accountOptions(lastAccount())}</select>` : ""}<button class="btn" data-act="quick">Ya lo pagué</button><button class="btn" data-act="quickplan" style="background:var(--amber)">Lo voy a pagar</button></div>
     <p class="muted small">Si es plata que entra (sueldo, una transferencia), poné + adelante del monto.</p></section>`;
 }
