@@ -195,17 +195,20 @@ const guessCat = (desc, amount) => {
 const FX_KEY = "fdm:fx", FX_NAMES = { oficial: "Oficial", tarjeta: "Tarjeta", blue: "Blue", bolsa: "MEP", contadoconliqui: "CCL", mayorista: "Mayorista", cripto: "Cripto" };
 let fx = null;
 try { fx = JSON.parse(localStorage.getItem(FX_KEY)); } catch {}
-const fxCasa = () => db.fxCasa || "tarjeta";
-// Precio de venta del dólar elegido (o el que pusiste a mano); si ese no está, el oficial
-function usdRate() {
-  if (db.fxManual) return db.fxManual;
-  const l = fx?.list || [];
-  return (l.find(x => x.casa === fxCasa()) || l.find(x => x.casa === "oficial"))?.venta || null;
+// Con impuestos: dólar tarjeta (oficial + 30%). Sin impuestos: el que elijas (oficial si no elegiste)
+const fxBase = () => db.fxBase || (db.fxCasa && db.fxCasa !== "tarjeta" ? db.fxCasa : "oficial");
+const fxTaxDefault = () => db.fxTax !== false;
+const TAX = 1.3;
+function usdRate(tax = fxTaxDefault()) {
+  if (db.fxManual) return round2(db.fxManual * (tax ? TAX : 1));
+  const l = fx?.list || [], of = l.find(x => x.casa === "oficial")?.venta;
+  if (tax) return l.find(x => x.casa === "tarjeta")?.venta || (of ? round2(of * TAX) : null);
+  return l.find(x => x.casa === fxBase())?.venta || of || null;
 }
-const fxLabel = () => db.fxManual ? "dólar puesto a mano" : `dólar ${(FX_NAMES[fxCasa()] || fxCasa()).toLowerCase()}`;
-function conv(v, from, to) {
+const fxLabel = (tax = fxTaxDefault()) => db.fxManual ? (tax ? "dólar a mano + impuestos" : "dólar a mano") : tax ? "dólar tarjeta, con impuestos" : `dólar ${(FX_NAMES[fxBase()] || fxBase()).toLowerCase()}, sin impuestos`;
+function conv(v, from, to, tax = fxTaxDefault()) {
   if (from === to) return v;
-  const r = usdRate(); if (!r) return null;
+  const r = usdRate(tax); if (!r) return null;
   if (from === "USD" && to === "ARS") return round2(v * r);
   if (from === "ARS" && to === "USD") return round2(v / r);
   return null;
@@ -231,32 +234,35 @@ async function fetchFx() {
 // Lo planeado en dólares sigue al dólar del día
 function refreshUsd() {
   let ch = false;
-  for (const p of db.planned) if (p.usd) { const a = conv(p.usd, "USD", p.currency); if (a != null && a !== p.amount) { p.amount = a; ch = true; } }
+  for (const p of db.planned) if (p.usd) { const a = conv(p.usd, "USD", p.currency, p.tax !== false); if (a != null && a !== p.amount) { p.amount = a; ch = true; } }
   if (ch) save();
 }
-const usdNote = o => o?.cur === "USD" ? `US$ ${new Intl.NumberFormat("es-AR", { maximumFractionDigits: 2 }).format(o.amount)} a ${money(o.rate, "ARS")}` : "";
+const usdNote = o => o?.cur === "USD" ? `US$ ${new Intl.NumberFormat("es-AR", { maximumFractionDigits: 2 }).format(o.amount)} a ${money(o.rate, "ARS")}${o.tax === false ? " sin impuestos" : o.tax ? " con impuestos" : ""}` : "";
 // Campo de monto con $ / US$: muestra la conversión y devuelve el monto en la moneda de la cuenta
-const amtHTML = (val, label = "Monto") => `<div class="field"><span class="label">${label}</span><div class="amt"><input type="text" inputmode="decimal" id="fAmt" placeholder="0,00" value="${val ? new Intl.NumberFormat("es-AR", { maximumFractionDigits: 2 }).format(val) : ""}"><div class="seg cur" id="fAmtCur"><button type="button" data-c="ARS">$</button><button type="button" data-c="USD">US$</button></div></div><p class="muted small" id="fFx"></p></div>`;
-function bindAmt(b, acctCur, startCur) {
-  let cur = startCur;
-  const inp = b.querySelector("#fAmt"), segs = b.querySelectorAll("#fAmtCur button"), out = b.querySelector("#fFx");
+const amtHTML = (val, label = "Monto") => `<div class="field"><span class="label">${label}</span><div class="amt"><input type="text" inputmode="decimal" id="fAmt" placeholder="0,00" value="${val ? new Intl.NumberFormat("es-AR", { maximumFractionDigits: 2 }).format(val) : ""}"><div class="seg cur" id="fAmtCur"><button type="button" data-c="ARS">$</button><button type="button" data-c="USD">US$</button></div></div><div class="seg" id="fTax" hidden><button type="button" data-t="1">Con impuestos</button><button type="button" data-t="0">Sin impuestos</button></div><p class="muted small" id="fFx"></p></div>`;
+function bindAmt(b, acctCur, startCur, startTax = fxTaxDefault()) {
+  let cur = startCur, tax = startTax;
+  const inp = b.querySelector("#fAmt"), segs = b.querySelectorAll("#fAmtCur button"), out = b.querySelector("#fFx"), taxSeg = b.querySelector("#fTax");
   const show = () => {
     segs.forEach(x => x.setAttribute("aria-pressed", x.dataset.c === cur));
+    taxSeg.querySelectorAll("button").forEach(x => x.setAttribute("aria-pressed", (x.dataset.t === "1") === tax));
     const v = Math.abs(parseAmount(inp.value)), ac = acctCur();
+    taxSeg.hidden = cur === ac;
     if (cur === ac) { out.textContent = ""; return; }
-    const r = usdRate();
+    const r = usdRate(tax);
     if (!r) { out.textContent = "No pude ver a cuánto está el dólar. Ponelo a mano en Cuentas → Dólar."; return; }
-    out.textContent = v ? `≈ ${money(conv(v, cur, ac), ac)} (${fxLabel()} ${money(r, "ARS")})` : `Se pasa a ${ac === "ARS" ? "pesos" : ac} con el ${fxLabel()} (${money(r, "ARS")}).`;
+    out.textContent = v ? `≈ ${money(conv(v, cur, ac, tax), ac)} (${fxLabel(tax)}: ${money(r, "ARS")})` : `Se pasa a ${ac === "ARS" ? "pesos" : ac} con el ${fxLabel(tax)} (${money(r, "ARS")}).`;
   };
   segs.forEach(x => (x.onclick = () => { cur = x.dataset.c; show(); }));
+  taxSeg.querySelectorAll("button").forEach(x => (x.onclick = () => { tax = x.dataset.t === "1"; db.fxTax = tax; save(); show(); }));
   inp.addEventListener("input", show); show();
   return {
     show,
     read() {
       const v = Math.abs(parseAmount(inp.value)); if (!v) return null;
       const ac = acctCur(); if (cur === ac) return { amount: v };
-      const c = conv(v, cur, ac); if (c == null) return { error: "No pude ver a cuánto está el dólar. Ponelo a mano en Cuentas → Dólar." };
-      return { amount: c, usd: cur === "USD" ? v : null, orig: { amount: v, cur, rate: usdRate(), casa: fxLabel() } };
+      const c = conv(v, cur, ac, tax); if (c == null) return { error: "No pude ver a cuánto está el dólar. Ponelo a mano en Cuentas → Dólar." };
+      return { amount: c, usd: cur === "USD" ? v : null, tax, orig: { amount: v, cur, rate: usdRate(tax), casa: fxLabel(tax), tax } };
     },
   };
 }
@@ -332,6 +338,7 @@ function render() {
   const head = `<header class="mast"><div class="brand">fdm<span>.</span></div><div class="today">${esc(today)}</div></header>`;
   const body = { inicio: viewInicio, gastos: viewGastos, planeados: viewPlaneados, cuentas: viewCuentas }[tab]();
   document.getElementById("app").innerHTML = head + body;
+  if (tab === "inicio") quickFx();
   document.getElementById("fab").hidden = tab === "cuentas" && !db.accounts.length;
 }
 
@@ -399,26 +406,29 @@ function quickCard() {
   const chips = frequent();
   return `<section class="card quick" aria-label="Anotar rápido">
     <div class="qrow"><button type="button" class="curbtn${qCur === "USD" ? " usd" : ""}" data-act="qcur" aria-label="Moneda: tocá para cambiar">${qCur === "USD" ? "US$" : "$"}</button><input type="text" inputmode="decimal" id="qAmt" placeholder="0" aria-label="Monto" enterkeyhint="next" style="flex:0 1 28%;min-width:72px"><input type="text" id="qDesc" placeholder="¿En qué?" aria-label="En qué" maxlength="80" enterkeyhint="done"></div>
+    <div class="seg" id="qTax"${qCur === "USD" ? "" : " hidden"}><button type="button" data-qtax="1" aria-pressed="${qTax}">Con impuestos</button><button type="button" data-qtax="0" aria-pressed="${!qTax}">Sin impuestos</button></div>
     <p class="muted small" id="qFx"${qCur === "USD" ? "" : " hidden"}></p>
     ${chips.length ? `<div class="chips">${chips.map((c, i) => `<button data-chip="${i}">${esc(c.desc)}</button>`).join("")}</div>` : ""}
     <div class="qrow">${db.accounts.length > 1 ? `<select id="qAcct" aria-label="Cuenta">${accountOptions(lastAccount())}</select>` : ""}<button class="btn" data-act="quick">Ya lo pagué</button><button class="btn" data-act="quickplan" style="background:var(--amber)">Lo voy a pagar</button></div>
     <p class="muted small">Si es plata que entra (sueldo, una transferencia), poné + adelante del monto.</p></section>`;
 }
-let qCur = "ARS";
+let qCur = "ARS", qTax = fxTaxDefault();
 // Monto del anotador rápido en la moneda de la cuenta (convierte si está en US$)
 function quickAmount(acc, raw) {
   const v = Math.abs(parseAmount(raw)); if (!v) return null;
   const ac = acc?.currency || "ARS";
   if (qCur === ac) return { amount: v };
-  const c = conv(v, qCur, ac);
+  const c = conv(v, qCur, ac, qTax);
   if (c == null) { toast("No pude ver a cuánto está el dólar: ponelo en Cuentas → Dólar"); return { error: true }; }
-  return { amount: c, usd: qCur === "USD" ? v : null, orig: { amount: v, cur: qCur, rate: usdRate(), casa: fxLabel() } };
+  return { amount: c, usd: qCur === "USD" ? v : null, tax: qTax, orig: { amount: v, cur: qCur, rate: usdRate(qTax), casa: fxLabel(qTax), tax: qTax } };
 }
 function quickFx() {
   const el = document.getElementById("qFx"); if (!el) return;
-  el.hidden = qCur !== "USD"; if (el.hidden) return;
-  const acc = acctById(document.getElementById("qAcct")?.value || lastAccount()), r = usdRate(), v = Math.abs(parseAmount(document.getElementById("qAmt").value));
-  el.textContent = !r ? "No pude ver a cuánto está el dólar: ponelo en Cuentas → Dólar." : v ? `US$ ${new Intl.NumberFormat("es-AR").format(v)} ≈ ${money(conv(v, "USD", acc?.currency || "ARS"), acc?.currency || "ARS")} (${fxLabel()} ${money(r, "ARS")})` : `En dólares: se pasa a pesos con el ${fxLabel()} (${money(r, "ARS")}).`;
+  const ts = document.getElementById("qTax");
+  el.hidden = qCur !== "USD"; if (ts) ts.hidden = el.hidden; if (el.hidden) return;
+  if (ts) ts.querySelectorAll("button").forEach(x => x.setAttribute("aria-pressed", (x.dataset.qtax === "1") === qTax));
+  const acc = acctById(document.getElementById("qAcct")?.value || lastAccount()), r = usdRate(qTax), v = Math.abs(parseAmount(document.getElementById("qAmt").value));
+  el.textContent = !r ? "No pude ver a cuánto está el dólar: ponelo en Cuentas → Dólar." : v ? `US$ ${new Intl.NumberFormat("es-AR").format(v)} ≈ ${money(conv(v, "USD", acc?.currency || "ARS", qTax), acc?.currency || "ARS")} (${fxLabel(qTax)}: ${money(r, "ARS")})` : `En dólares: se pasa a pesos con el ${fxLabel(qTax)} (${money(r, "ARS")}).`;
 }
 function quickPlan() {
   const amtEl = document.getElementById("qAmt"), descEl = document.getElementById("qDesc");
@@ -431,7 +441,7 @@ function quickPlan() {
   // Un cobro casi siempre tiene día y se repite (el sueldo): se completa en el formulario
   if (amtEl.value.trim().startsWith("+")) return formPlan(null, { kind: "in", desc: desc || "Sueldo", amount: amt, monthly: !desc || /sueldo|salario|haberes/i.test(desc), accountId: a?.id });
   if (!desc) { toast("Escribí qué vas a pagar"); descEl.focus(); return; }
-  const p = { id: uid(), created: Date.now(), kind: "out", desc, amount: amt, currency: a?.currency || "ARS", due: "", cat: guessCat(desc, -1), accountId: a?.id || "", monthly: false, ...(qa.usd ? { usd: qa.usd } : {}) };
+  const p = { id: uid(), created: Date.now(), kind: "out", desc, amount: amt, currency: a?.currency || "ARS", due: "", cat: guessCat(desc, -1), accountId: a?.id || "", monthly: false, ...(qa.usd ? { usd: qa.usd, tax: qa.tax } : {}) };
   db.planned.push(p);
   save(); render();
   const o = projection(p.currency).flatMap(m => m.items).find(o => o.p === p);
@@ -628,15 +638,16 @@ function resetMonth(mk) {
 }
 
 function fxCard() {
-  const l = fx?.list || [], r = usdRate();
+  const l = fx?.list || [], rc = usdRate(true), rs = usdRate(false);
   const at = fx?.at ? new Date(fx.at).toLocaleString("es-AR", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "";
-  const opts = [...new Set(["tarjeta", "oficial", "blue", "bolsa", ...l.map(x => x.casa)])];
+  const opts = [...new Set(["oficial", "blue", "bolsa", ...l.map(x => x.casa)])].filter(c => c !== "tarjeta" && c !== "mayorista");
+  const on = c => !db.fxManual && (c === "tarjeta" || c === fxBase()) ? "on" : "";
   return `<section class="card"><h2>Dólar</h2>
-    <p class="muted small">Cuando anotás algo en US$, fdm lo pasa a pesos con esta cotización (precio de venta). Para lo que pagás con la tarjeta en dólares, el que corresponde es el <b>tarjeta</b>.</p>
-    ${l.length ? `<div class="fxl">${l.filter(x => FX_NAMES[x.casa] && x.casa !== "mayorista").map(x => `<span class="${!db.fxManual && x.casa === fxCasa() ? "on" : ""}">${esc(FX_NAMES[x.casa])}</span><b class="num ${!db.fxManual && x.casa === fxCasa() ? "on" : ""}">${money(x.venta, "ARS")}</b>`).join("")}</div>` : `<p class="small">Todavía no pude ver la cotización. Fijate que tengas internet y tocá <b>Actualizar</b>, o ponela a mano.</p>`}
-    <label class="field"><span class="label">Usar para convertir</span><select id="fxCasa">${opts.map(c => `<option value="${c}" ${!db.fxManual && c === fxCasa() ? "selected" : ""}>Dólar ${esc((FX_NAMES[c] || c).toLowerCase())}</option>`).join("")}${db.fxManual ? `<option selected value="">A mano: ${money(db.fxManual, "ARS")}</option>` : ""}</select></label>
+    <p class="muted small">Cuando anotás algo en US$ elegís <b>con impuestos</b> (dólar tarjeta: oficial + 30%, lo que te cobran al pagar con la tarjeta) o <b>sin impuestos</b> (por ejemplo si pagás con dólares que ya tenés).</p>
+    ${l.length ? `<div class="fxl">${l.filter(x => FX_NAMES[x.casa] && x.casa !== "mayorista").map(x => `<span class="${on(x.casa)}">${esc(FX_NAMES[x.casa])}${x.casa === "tarjeta" ? " (con impuestos)" : ""}</span><b class="num ${on(x.casa)}">${money(x.venta, "ARS")}</b>`).join("")}</div>` : `<p class="small">Todavía no pude ver la cotización. Fijate que tengas internet y tocá <b>Actualizar</b>, o ponela a mano.</p>`}
+    <label class="field"><span class="label">Sin impuestos, usar</span><select id="fxCasa">${opts.map(c => `<option value="${c}" ${!db.fxManual && c === fxBase() ? "selected" : ""}>Dólar ${esc((FX_NAMES[c] || c).toLowerCase())}</option>`).join("")}${db.fxManual ? `<option selected value="">A mano: ${money(db.fxManual, "ARS")}</option>` : ""}</select></label>
     <div class="row"><button class="btn ghost small" data-act="fxload">Actualizar</button><button class="btn ghost small" data-act="fxmanual">${db.fxManual ? "Cambiar el de a mano" : "Poner a mano"}</button></div>
-    ${r ? `<p class="muted small">Ahora: ${fxLabel()} ${money(r, "ARS")}${at && !db.fxManual ? ` · actualizado ${at}` : ""}</p>` : ""}</section>`;
+    ${rc ? `<p class="muted small">Ahora: con impuestos ${money(rc, "ARS")} · sin impuestos ${money(rs, "ARS")}${at && !db.fxManual ? ` · actualizado ${at}` : ""}</p>` : ""}</section>`;
 }
 function viewCuentas() {
   let html = `<section class="card"><div class="cardhead"><h2>Tus cuentas</h2><button class="btn small" data-act="addAccount">Agregar</button></div><div class="list">`;
@@ -795,7 +806,7 @@ function formTx(t) {
     cat.onchange = () => (catTouched = true);
     desc.oninput = () => { if (!catTouched) cat.value = guessCat(desc.value, kind === "in" ? 1 : -1); };
     const acctSel = b.querySelector("#fAcct"), acur = () => acctById(acctSel.value)?.currency || "ARS";
-    const amtW = bindAmt(b, acur, t?.orig?.cur || acur());
+    const amtW = bindAmt(b, acur, t?.orig?.cur || acur(), t?.orig?.tax ?? fxTaxDefault());
     acctSel.addEventListener("change", amtW.show);
     b.querySelector("#fOk").onclick = () => {
       const r = amtW.read();
@@ -803,7 +814,7 @@ function formTx(t) {
       if (!r) { err.textContent = "Poné un monto"; err.hidden = false; return; }
       if (r.error) { err.textContent = r.error; err.hidden = false; return; }
       // Si no cambió lo que pusiste en dólares, se mantiene la cotización de ese día
-      const keep = t?.orig && r.orig && t.orig.amount === r.orig.amount && t.orig.cur === r.orig.cur && t.accountId === acctSel.value;
+      const keep = t?.orig && r.orig && t.orig.amount === r.orig.amount && t.orig.cur === r.orig.cur && (t.orig.tax ?? true) === r.orig.tax && t.accountId === acctSel.value;
       const amt = keep ? Math.abs(t.amount) : r.amount;
       const date = b.querySelector("#fDate").value || todayISO();
       const rec = { accountId: acctSel.value, amount: kind === "out" ? -Math.abs(amt) : Math.abs(amt), desc: desc.value.trim(), cat: cat.value, date, orig: keep ? t.orig : r.orig || undefined };
@@ -848,7 +859,7 @@ function formPlan(p, preset = {}) {
     const desc = b.querySelector("#fDesc"), cat = b.querySelector("#fCat"), acct = b.querySelector("#fAcct");
     // Va en la moneda de la cuenta; si lo ponés en dólares se guarda cuántos y sigue al dólar del día
     const planCur = () => acctById(acct.value)?.currency || p?.currency || "ARS";
-    const amtW = bindAmt(b, planCur, v.usd ? "USD" : planCur());
+    const amtW = bindAmt(b, planCur, v.usd ? "USD" : planCur(), v.tax ?? fxTaxDefault());
     let catTouched = !isNew;
     const segs = b.querySelectorAll("#fKind button"), paidBtn = b.querySelector("#fPaid");
     const paint = () => { segs.forEach(s => s.setAttribute("aria-pressed", s.dataset.k === kind)); if (paidBtn) paidBtn.textContent = kind === "in" ? "Ya lo cobré" : "Ya lo pagué"; };
@@ -874,7 +885,7 @@ function formPlan(p, preset = {}) {
         if (b.querySelector("#fDay").value && (!Number.isInteger(day) || day < 1 || day > 31)) { err.textContent = "El día tiene que ser de 1 a 31"; err.hidden = false; return null; }
         due = day ? nextDue(day, p?.id) : "";
       }
-      return { kind, desc: desc.value.trim(), amount: amt, currency: planCur(), usd: r.usd || null, due, cat: cat.value, accountId: acct.value, monthly: mon.checked };
+      return { kind, desc: desc.value.trim(), amount: amt, currency: planCur(), usd: r.usd || null, tax: r.usd ? r.tax : null, due, cat: cat.value, accountId: acct.value, monthly: mon.checked };
     };
     b.querySelector("#fOk").onclick = () => {
       const rec = read(); if (!rec) return;
@@ -1459,10 +1470,11 @@ document.addEventListener("click", e => {
   else if ("close" in d) closeSheet();
   else if (d.tx) formTx(db.txs.find(t => t.id === d.tx));
   else if (d.carry) formCarry(d.carry, d.cur || "ARS");
+  else if (d.qtax) { qTax = d.qtax === "1"; db.fxTax = qTax; save(); quickFx(); }
   else if (d.act === "qcur") { qCur = qCur === "USD" ? "ARS" : "USD"; el.textContent = qCur === "USD" ? "US$" : "$"; el.classList.toggle("usd", qCur === "USD"); quickFx(); document.getElementById("qAmt").focus(); }
   else if (d.act === "fxload") { el.disabled = true; el.textContent = "Buscando…"; fetchFx().then(ok => { if (!ok) { render(); toast("No pude ver la cotización. ¿Tenés internet?"); } else toast("Dólar actualizado"); }); }
   else if (d.act === "fxmanual") {
-    const v = prompt("¿A cuánto está el dólar? (dejalo vacío para volver a usar el de internet)", db.fxManual ? String(db.fxManual) : "");
+    const v = prompt("¿A cuánto está el dólar sin impuestos? (con impuestos se le suma el 30%; dejalo vacío para volver a usar el de internet)", db.fxManual ? String(db.fxManual) : "");
     if (v === null) return;
     const n = Math.abs(parseAmount(v));
     db.fxManual = n || null; refreshUsd(); save(); render(); toast(n ? `Dólar a mano: ${money(n, "ARS")}` : "Uso el dólar de internet");
@@ -1521,7 +1533,7 @@ document.addEventListener("keydown", e => {
   else if (e.target.id === "gAmt") { e.preventDefault(); document.getElementById("gAdd").click(); }
 });
 document.addEventListener("change", e => {
-  if (e.target.id === "fxCasa") { if (e.target.value) { db.fxCasa = e.target.value; db.fxManual = null; } refreshUsd(); save(); render(); return; }
+  if (e.target.id === "fxCasa") { if (e.target.value) { db.fxBase = e.target.value; db.fxManual = null; } refreshUsd(); save(); render(); return; }
   if (e.target.id === "qAcct") quickFx();
   if (e.target.id === "fUntil") { db.until = e.target.value; save(); render(); const n = monthName(db.until); toast(`Se ven los meses hasta ${n}`); return; }
   const f = e.target.dataset?.filt; if (!f) return;
