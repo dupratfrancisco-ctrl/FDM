@@ -169,7 +169,7 @@ button.chip{text-align:left;font:inherit;cursor:pointer}
 "use strict";
 // ---------- Datos: todo queda guardado en este celular ----------
 const KEY = "fdm:data";
-const CATS = ["Supermercado","Comida","Transporte","Servicios","Alquiler y hogar","Salud","Educación","Ocio","Compras","Impuestos","Tarjeta","Transferencias","Sueldo","Otros"];
+const CATS = ["Supermercado","Comida","Transporte","Servicios","Alquiler y hogar","Salud","Educación","Ocio","Compras","Impuestos","Tarjeta","Transferencias","Sueldo","Rendimientos","Otros"];
 const GUESS = [
   ["Supermercado", /super|carrefour|coto|\bdia\b|jumbo|disco|vea|chango|walmart|maxiconsumo|almac|verduler|carnic/i],
   ["Comida", /rest|pizz|burger|mcdonald|cafe|café|bar |rappi|pedidosya|delivery|helad|panader|starbucks/i],
@@ -182,6 +182,7 @@ const GUESS = [
   ["Compras", /mercadolibre|mercado libre|meli|falabella|zara|garbarino|fravega|frávega|shop|tienda/i],
   ["Impuestos", /afip|arca|arba|agip|impuesto|iibb|ganancias|sellos|abl|patente|monotributo/i],
   ["Tarjeta", /pago tarjeta|pago de tarjeta|visa|mastercard|amex|american express|resumen/i],
+  ["Rendimientos", /rendimiento|intereses? ganad/i],
   ["Sueldo", /sueldo|haberes|salario|remuneraci|aguinaldo/i],
   ["Transferencias", /transf|cvu|cbu|debin|alias/i],
 ];
@@ -301,6 +302,86 @@ function balance(a) {
   }
   return round2(b);
 }
+// ---------- Rendimientos: cuentas que pagan intereses todos los días por la plata que dejás ----------
+const isUala = a => /ual[aá]/i.test(a?.name || "");
+const UALA = { tna: 19, min: 10000, cap: 1000000 };
+const dayShift = (iso, n) => { const d = new Date(iso + "T12:00"); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); };
+// Saldo de la cuenta al terminar un día (null si es antes de que la empezaste a anotar)
+function balanceAt(a, day) {
+  if (day < a.baseDate) return null;
+  let b = a.base;
+  for (const t of db.txs) if (t.accountId === a.id && t.date <= day && (t.date > a.baseDate || (t.date === a.baseDate && t.created > a.baseAt))) b += t.amount;
+  return round2(b);
+}
+const dailyInterest = (a, bal) => !a.rate?.tna || bal < (a.rate.min || 0) ? 0 : round2(Math.min(bal, a.rate.cap || Infinity) * a.rate.tna / 100 / 365);
+// Suma lo de cada día terminado (como el banco, que paga lo de ayer), en un movimiento por mes que va creciendo
+function accrueAll() {
+  let ch = false;
+  const end = dayShift(todayISO(), -1);
+  for (const a of db.accounts) {
+    if (!a.rate?.tna) continue;
+    for (let d = dayShift(a.rate.last, 1), n = 0; d <= end && n < 800; d = dayShift(d, 1), n++) {
+      const bal = balanceAt(a, d), i = bal == null ? 0 : dailyInterest(a, bal);
+      if (i > 0) {
+        const mk = monthKey(d);
+        let t = db.txs.find(x => x.src === "interest" && !x.closed && x.accountId === a.id && monthKey(x.date) === mk);
+        if (!t) { t = { id: uid(), created: Date.now(), src: "interest", accountId: a.id, date: d, amount: 0, desc: `Rendimientos de ${MONTHS[+mk.slice(5) - 1]}`, cat: "Rendimientos", days: 0 }; db.txs.push(t); }
+        t.amount = round2(t.amount + i); t.date = d; t.days++;
+      }
+      a.rate.last = d; ch = true;
+    }
+  }
+  if (ch) save();
+  return ch;
+}
+// Al poner el saldo que muestra el banco, los rendimientos ya sumados quedan adentro de ese saldo
+function setBase(a, v, date, at) {
+  for (const t of db.txs) if (t.src === "interest" && !t.closed && t.accountId === a.id) { t.closed = true; if (t.date > date) t.date = date; }
+  a.base = v; a.baseDate = date; a.baseAt = at;
+}
+function formRate(a) {
+  const r = a.rate || (isUala(a) ? UALA : { tna: "", min: "", cap: "" }), on = !!a.rate || isUala(a);
+  const fmt = n => n === "" || n == null ? "" : new Intl.NumberFormat("es-AR", { maximumFractionDigits: 2 }).format(n);
+  openSheet(`<h2>Rendimientos de ${esc(a.name)}</h2>
+    <p class="muted small">${isUala(a) ? "Ualá te paga intereses todos los días por la plata que dejás en la cuenta. En octubre de 2026 la tasa base es <b>19% anual (TNA)</b> sobre lo que tengas <b>entre $ 10.000 y $ 1.000.000</b> (lo que pasa del tope no rinde), y si usás más la app puede llegar a 24–25%. Fijate en tu app cuánto te da a vos, o poné abajo cuánto te pagaron hoy." : "Si el banco te paga intereses todos los días por dejar la plata, poné la tasa anual (TNA) y fdm los suma solo cada día."}</p>
+    <label class="check"><input type="checkbox" id="fOn" ${on ? "checked" : ""}> Me paga intereses por dejar la plata</label>
+    <div id="fRateBox">
+      <div class="row"><label class="field" style="flex:0 1 110px"><span class="label">TNA %</span><input type="text" inputmode="decimal" id="fTna" value="${fmt(r.tna)}"></label>
+      <label class="field"><span class="label">Rinde desde $</span><input type="text" inputmode="decimal" id="fMin" value="${fmt(r.min)}" placeholder="0"></label>
+      <label class="field"><span class="label">Hasta $</span><input type="text" inputmode="decimal" id="fCap" value="${fmt(r.cap)}" placeholder="Sin tope"></label></div>
+      <div class="field" style="margin-top:14px"><span class="label">¿Cuánto te pagaron hoy?</span><div class="qrow"><input type="text" inputmode="decimal" id="fGot" placeholder="$ 0" style="flex:1"><button class="btn ghost small" id="fCalc" type="button">Calcular la tasa</button></div></div>
+      <p class="muted small" id="fEst"></p>
+    </div>
+    <p class="err" id="fErr" hidden></p>
+    <button class="btn" id="fOk">Guardar</button><button class="btn ghost" data-close>Cancelar</button>`, b => {
+    const $ = id => b.querySelector(id), num = id => { const v = $(id).value.trim(); return v ? Math.abs(parseAmount(v)) : null; };
+    const read = () => ({ tna: num("#fTna"), min: num("#fMin") || 0, cap: num("#fCap") || null });
+    const est = () => {
+      $("#fRateBox").hidden = !$("#fOn").checked;
+      const x = read(), bal = balance(a), day = dailyInterest({ rate: x }, bal);
+      $("#fEst").textContent = !x.tna ? "" : day ? `Con los ${money(bal, a.currency)} que tenés, te dan unos ${money(day, a.currency)} por día (unos ${money(round2(day * 30), a.currency)} por mes).` : `Con ${money(bal, a.currency)} todavía no rinde (rinde desde ${money(x.min, a.currency)}).`;
+    };
+    ["#fOn", "#fTna", "#fMin", "#fCap"].forEach(id => $(id).addEventListener("input", est)); $("#fOn").addEventListener("change", est); est();
+    $("#fCalc").onclick = () => {
+      const got = num("#fGot"), x = read(), bal = balance(a), base = Math.min(bal, x.cap || Infinity);
+      const e = $("#fErr");
+      if (!got) { e.textContent = "Poné cuánto te pagaron hoy"; e.hidden = false; return; }
+      if (base <= 0) { e.textContent = "Primero poné cuánto tenés en la cuenta"; e.hidden = false; return; }
+      e.hidden = true;
+      $("#fTna").value = new Intl.NumberFormat("es-AR", { maximumFractionDigits: 2 }).format(Math.round(got * 365 / base * 10000) / 100);
+      est();
+    };
+    $("#fOk").onclick = () => {
+      if ($("#fOn").checked) {
+        const x = read();
+        if (!x.tna || x.tna > 300) { const e = $("#fErr"); e.textContent = "Poné la tasa anual (por ejemplo 19)"; e.hidden = false; return; }
+        a.rate = { ...x, last: a.rate?.last || dayShift(todayISO(), -1) };
+      } else delete a.rate;
+      db.rateAsked = true;
+      save(); closeSheet(); render(); toast(a.rate ? `Listo: ${a.name} suma ${new Intl.NumberFormat("es-AR").format(a.rate.tna)}% anual todos los días` : "Rendimientos apagados");
+    };
+  });
+}
 function currencies() {
   const s = new Set(db.accounts.map(a => a.currency));
   for (const p of db.planned) s.add(p.currency);
@@ -353,7 +434,8 @@ function viewInicio() {
       <p class="muted small">Después anotás lo que pagás y lo que vas a pagar, y fdm te dice cuánto te queda. Si tenés plata en otro lado, la sumás en <b>Cuentas</b>.</p></section>`;
   }
   const mk = monthKey(todayISO());
-  let html = quickCard() + `<section class="card hero"><span class="label">A fin de ${MONTHS[new Date().getMonth()]} te quedan</span>`;
+  const ua = !db.rateAsked && db.accounts.find(a => isUala(a) && !a.rate);
+  let html = quickCard() + (ua ? `<section class="card"><h2>Ualá te paga intereses</h2><p class="small">Por dejar la plata en Ualá te pagan todos los días (en octubre, 19% anual o más). ¿Querés que fdm los sume solo a tu saldo?</p><div class="row"><button class="btn" data-rate="${ua.id}">Sí, configurarlo</button><button class="btn ghost" data-act="rateno">Ahora no</button></div></section>` : "") + `<section class="card hero"><span class="label">A fin de ${MONTHS[new Date().getMonth()]} te quedan</span>`;
   for (const cur of currencies()) {
     const [m, ...rest] = projection(cur);
     const any = db.planned.some(p => p.currency === cur);
@@ -653,8 +735,8 @@ function viewCuentas() {
   for (const a of db.accounts) {
     const n = db.txs.filter(t => t.accountId === a.id).length;
     html += `<div class="acct"><span class="n">${esc(a.name)}</span><span class="b num">${money(balance(a), a.currency)}</span>
-      <span class="muted small">${esc(a.currency)} · ${n} movimiento${n === 1 ? "" : "s"}</span><span></span>
-      <div class="actions"><button class="btn ghost small" data-import="${a.id}">Importar movimientos</button><button class="btn ghost small" data-adjust="${a.id}">Corregir saldo</button><button class="btn ghost small" data-editacct="${a.id}">Editar</button></div></div>`;
+      <span class="muted small">${esc(a.currency)} · ${n} movimiento${n === 1 ? "" : "s"}${a.rate ? ` · rinde ${new Intl.NumberFormat("es-AR").format(a.rate.tna)}% anual, unos ${money(dailyInterest(a, balance(a)), a.currency)} por día` : ""}</span><span></span>
+      <div class="actions"><button class="btn ghost small" data-import="${a.id}">Importar movimientos</button><button class="btn ghost small" data-adjust="${a.id}">Corregir saldo</button><button class="btn ghost small" data-rate="${a.id}">Rendimientos</button><button class="btn ghost small" data-editacct="${a.id}">Editar</button></div></div>`;
   }
   html += `</div></section>
   ${fxCard()}
@@ -767,7 +849,7 @@ function formAdjust(a) {
       if (b.querySelector("#fDiff").checked && diff) {
         // El saldo cierra solo con el movimiento nuevo; los gastos del mes incluyen lo que no anotaste
         db.txs.push({ id: uid(), created: Date.now(), src: "manual", accountId: a.id, date: todayISO(), amount: diff, desc: diff < 0 ? "Gastos sin anotar" : "Ingresos sin anotar", cat: diff < 0 ? "Otros" : "Transferencias" });
-      } else { a.base = v; a.baseDate = todayISO(); a.baseAt = Date.now(); }
+      } else setBase(a, v, todayISO(), Date.now());
       save(); closeSheet(); render(); toast("Saldo actualizado");
     };
     const bal = b.querySelector("#fBal"), txt = b.querySelector("#fDiffTxt");
@@ -1383,7 +1465,7 @@ function formImport(a) {
           const now = Date.now();
           for (const t of fresh) db.txs.push({ id: uid(), created: now, src: "import", accountId: a.id, date: t.date, amount: t.amount, desc: t.desc, cat: guessCat(t.desc, t.amount) });
           const useBal = out.querySelector("#fBal")?.checked;
-          if (useBal) { a.base = res.balance; a.baseDate = res.balanceDate; a.baseAt = now + 1; }
+          if (useBal) setBase(a, res.balance, res.balanceDate, now + 1);
           save(); closeSheet(); render();
           toast(`${fresh.length} movimientos importados${useBal ? " y saldo actualizado" : ""}`);
         };
@@ -1468,6 +1550,8 @@ document.addEventListener("click", e => {
   else if ("close" in d) closeSheet();
   else if (d.tx) formTx(db.txs.find(t => t.id === d.tx));
   else if (d.carry) formCarry(d.carry, d.cur || "ARS");
+  else if (d.rate) { const a = acctById(d.rate); if (a) formRate(a); }
+  else if (d.act === "rateno") { db.rateAsked = true; save(); render(); }
   else if (d.qtax) { qTax = d.qtax === "1"; db.fxTax = qTax; save(); quickFx(); }
   else if (d.act === "qcur") { qCur = qCur === "USD" ? "ARS" : "USD"; el.textContent = qCur === "USD" ? "US$" : "$"; el.classList.toggle("usd", qCur === "USD"); quickFx(); document.getElementById("qAmt").focus(); }
   else if (d.act === "fxload") { el.disabled = true; el.textContent = "Buscando…"; fetchFx().then(ok => { if (!ok) { render(); toast("No pude ver la cotización. ¿Tenés internet?"); } else toast("Dólar actualizado"); }); }
@@ -1545,7 +1629,9 @@ document.getElementById("fab").onclick = () => {
 // Si otra pestaña cambió los datos, mostrar lo último
 addEventListener("storage", e => { if (e.key === KEY) { db = load(); render(); } });
 
+accrueAll();
 render();
+document.addEventListener("visibilitychange", () => { if (!document.hidden && accrueAll()) render(); });
 // El dólar se busca al abrir, cada media hora y al volver a la app si pasó más de media hora
 const fxOld = () => !fx?.at || Date.now() - fx.at > 30 * 60 * 1000;
 if (fxOld()) fetchFx(); else refreshUsd();
