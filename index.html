@@ -138,7 +138,7 @@ nav.tabs button[aria-current=page]{color:var(--ink)}
 .tag.done{background:var(--green-2);color:var(--green)}
 /* Monto en pesos o dólares */
 .amt{display:flex;gap:8px}.amt input{flex:1;min-width:0}
-.seg.cur{flex:0 0 auto}.seg.cur button{padding:9px 12px;flex:0 0 auto}
+.seg.curseg{flex:0 0 auto}.seg.curseg button{padding:9px 12px;flex:0 0 auto}
 .curbtn{flex:0 0 auto;min-width:58px;border-radius:10px;font-weight:800;background:var(--paper);box-shadow:inset 0 0 0 1.5px var(--line-2)}
 .curbtn.usd{background:var(--green-2);color:var(--green);box-shadow:inset 0 0 0 1.5px var(--green)}
 .fxl{display:grid;grid-template-columns:1fr auto;gap:8px 14px}
@@ -240,7 +240,7 @@ function refreshUsd() {
 }
 const usdNote = o => o?.cur === "USD" ? `US$ ${new Intl.NumberFormat("es-AR", { maximumFractionDigits: 2 }).format(o.amount)} a ${money(o.rate, "ARS")}${o.tax === false ? " sin impuestos" : o.tax ? " con impuestos" : ""}` : "";
 // Campo de monto con $ / US$: muestra la conversión y devuelve el monto en la moneda de la cuenta
-const amtHTML = (val, label = "Monto") => `<div class="field"><span class="label">${label}</span><div class="amt"><input type="text" inputmode="decimal" id="fAmt" placeholder="0,00" value="${val ? new Intl.NumberFormat("es-AR", { maximumFractionDigits: 2 }).format(val) : ""}"><div class="seg cur" id="fAmtCur"><button type="button" data-c="ARS">$</button><button type="button" data-c="USD">US$</button></div></div><div class="seg" id="fTax" hidden><button type="button" data-t="1">Con impuestos</button><button type="button" data-t="0">Sin impuestos</button></div><p class="muted small" id="fFx"></p></div>`;
+const amtHTML = (val, label = "Monto") => `<div class="field"><span class="label">${label}</span><div class="amt"><input type="text" inputmode="decimal" id="fAmt" placeholder="0,00" value="${val ? new Intl.NumberFormat("es-AR", { maximumFractionDigits: 2 }).format(val) : ""}"><div class="seg curseg" id="fAmtCur"><button type="button" data-c="ARS">$</button><button type="button" data-c="USD">US$</button></div></div><div class="seg" id="fTax" hidden><button type="button" data-t="1">Con impuestos</button><button type="button" data-t="0">Sin impuestos</button></div><p class="muted small" id="fFx"></p></div>`;
 function bindAmt(b, acctCur, startCur, startTax = fxTaxDefault()) {
   let cur = startCur, tax = startTax;
   const inp = b.querySelector("#fAmt"), segs = b.querySelectorAll("#fAmtCur button"), out = b.querySelector("#fFx"), taxSeg = b.querySelector("#fTax");
@@ -490,6 +490,7 @@ function quickCard() {
     <div class="seg" id="qTax"${qCur === "USD" ? "" : " hidden"}><button type="button" data-qtax="1" aria-pressed="${qTax}">Con impuestos</button><button type="button" data-qtax="0" aria-pressed="${!qTax}">Sin impuestos</button></div>
     <p class="muted small" id="qFx"${qCur === "USD" ? "" : " hidden"}></p>
     <div class="qrow">${db.accounts.length > 1 ? `<select id="qAcct" aria-label="Cuenta">${accountOptions(lastAccount())}</select>` : ""}<button class="btn" data-act="quick">Ya lo pagué</button><button class="btn" data-act="quickplan" style="background:var(--amber)">Lo voy a pagar</button></div>
+    <button class="btn ghost small" data-act="quickcuotas">En cuotas</button>
     <p class="muted small">Si es plata que entra (sueldo, una transferencia), poné + adelante del monto.</p></section>`;
 }
 let qCur = "ARS", qTax = fxTaxDefault();
@@ -587,7 +588,11 @@ function projection(cur) {
   const mine = db.planned.filter(p => p.currency === cur);
   // Se ven los meses hasta el que elegiste (o los próximos tres), y siempre los que tienen algo anotado
   let last = db.until ? (db.until > now ? db.until : now) : addMonths(now, 3);
-  for (const p of mine) { const k = p.due ? monthKey(p.due) : p.mk; if (k && k > last) last = k; }
+  for (const p of mine) {
+    let k = p.due ? monthKey(p.due) : p.mk;
+    if (p.cuotas && k) k = addMonths(k, p.cuotas.n - p.cuotas.paid - 1);
+    if (k && k > last) last = k;
+  }
   if (last > addMonths(now, 60)) last = addMonths(now, 60);
   const occ = [];
   for (const p of mine) {
@@ -597,7 +602,10 @@ function projection(cur) {
     for (let i = 0; mk <= last; i++, mk = addMonths(mk, 1)) {
       // Un mes puede tener su propio monto o día, o no ir ese mes
       const ov = p.monthly && p.over?.[mk];
-      occ.push({ p, mk, next: i > 0, skip: !!ov?.skip, changed: !!ov, date: ov?.day ? dayIn(mk, ov.day) : i === 0 ? first : dayIn(mk, day), amount: (isIn(p) ? 1 : -1) * (ov?.amount ?? p.amount) });
+      // En cuotas: cada mes es la cuota siguiente, hasta la última
+      const cuota = p.cuotas ? p.cuotas.paid + i + 1 : null;
+      if (cuota && cuota > p.cuotas.n) break;
+      occ.push({ p, mk, next: i > 0, cuota, skip: !!ov?.skip, changed: !!ov, date: ov?.day ? dayIn(mk, ov.day) : i === 0 ? first : dayIn(mk, day), amount: (isIn(p) ? 1 : -1) * (ov?.amount ?? p.amount) });
       if (!p.monthly) break;
     }
   }
@@ -629,7 +637,7 @@ function occRow(o) {
   const p = o.p, date = o.date || (o.next ? null : p.due), late = !o.next && date && date < todayISO();
   const when = date ? `<span class="tag ${late ? "late" : isIn(p) ? "done" : ""}">${late ? "vencido " : ""}${shortDate(date)}</span>` : "";
   const left = db.accounts.length && o.mk === monthKey(todayISO()) ? `<span style="color:${o.left < 0 ? "var(--red)" : "var(--green)"};font-weight:600">${o.left < 0 ? "te faltan " + money(-o.left, p.currency) : "te quedan " + money(o.left, p.currency)}</span> · ` : "";
-  return `<button class="item" data-plan="${p.id}" data-mk="${o.mk}"><span class="t">${esc(p.desc)}${when}</span><span class="a num ${isIn(p) ? "in" : "plan"}">${isIn(p) ? "+ " : "− "}${money(Math.abs(o.amount), p.currency)}</span><span class="s">${left}${isIn(p) ? "cobro" : esc(p.cat)}${p.usd ? ` · US$ ${new Intl.NumberFormat("es-AR").format(p.usd)}` : ""}${o.changed ? " · cambiado este mes" : p.monthly ? " · todos los meses" : ""}</span></button>`;
+  return `<button class="item" data-plan="${p.id}" data-mk="${o.mk}"><span class="t">${esc(p.desc)}${when}</span><span class="a num ${isIn(p) ? "in" : "plan"}">${isIn(p) ? "+ " : "− "}${money(Math.abs(o.amount), p.currency)}</span><span class="s">${left}${isIn(p) ? "cobro" : esc(p.cat)}${p.usd ? ` · US$ ${new Intl.NumberFormat("es-AR").format(p.usd)}` : ""}${o.cuota ? ` · cuota ${o.cuota} de ${p.cuotas.n}` : ""}${o.changed ? " · cambiado este mes" : p.monthly && !o.cuota ? " · todos los meses" : ""}</span></button>`;
 }
 const groupsList = () => db.groups || (db.groups = []);
 const groupById = id => groupsList().find(g => g.id === id);
@@ -921,8 +929,8 @@ function formPlan(p, preset = {}) {
   const isNew = !p;
   const v = p || preset;
   let kind = v.kind === "in" ? "in" : "out";
-  openSheet(`<h2>${isNew ? "Para más adelante" : p.monthly ? "Editar todos los meses" : "Editar"}</h2>
-    ${!isNew && p.monthly ? `<p class="muted small">Cambia todos los meses, menos los que cambiaste aparte.</p>` : ""}
+  openSheet(`<h2>${isNew ? "Para más adelante" : p.cuotas ? "Editar las cuotas" : p.monthly ? "Editar todos los meses" : "Editar"}</h2>
+    ${!isNew && p.monthly && !p.cuotas ? `<p class="muted small">Cambia todos los meses, menos los que cambiaste aparte.</p>` : ""}
     <div class="seg" id="fKind"><button data-k="out">Voy a pagar</button><button data-k="in">Voy a cobrar</button></div>
     <label class="field"><span class="label">Qué es</span><input type="text" id="fDesc" placeholder="Alquiler, sueldo, service del auto…" value="${esc(v.desc || "")}" maxlength="80"></label>
     ${amtHTML(v.usd || v.amount || "")}
@@ -932,7 +940,14 @@ function formPlan(p, preset = {}) {
       <label class="field"><span class="label">Categoría</span><select id="fCat">${catOptions(v.cat || (kind === "in" ? "Sueldo" : "Otros"))}</select></label>
     </div>
     <label class="field"><span class="label">Cuenta</span><select id="fAcct">${accountOptions(v.accountId || "", true)}</select></label>
-    <label class="check"><input type="checkbox" id="fMon" ${v.monthly ? "checked" : ""}> Se repite todos los meses</label>
+    <label class="check" id="fMonWrap"><input type="checkbox" id="fMon" ${v.monthly ? "checked" : ""}> Se repite todos los meses</label>
+    <label class="check" id="fCuoWrap"><input type="checkbox" id="fCuo" ${v.cuotas ? "checked" : ""}> En cuotas</label>
+    <div id="fCuoBox">
+      <div class="seg" id="fCuoMode"><button type="button" data-m="each">El monto es de cada cuota</button><button type="button" data-m="total">Es el total</button></div>
+      <div class="row" style="margin-top:12px"><label class="field"><span class="label">Cuántas cuotas</span><input type="number" inputmode="numeric" min="2" max="72" id="fCuoN" value="${v.cuotas?.n || ""}" placeholder="Ej. 6"></label>
+      <label class="field"><span class="label">Ya pagaste</span><input type="number" inputmode="numeric" min="0" id="fCuoP" value="${v.cuotas?.paid || 0}"></label></div>
+      <p class="muted small" id="fCuoTxt" style="margin-top:8px"></p>
+    </div>
     <p class="err" id="fErr" hidden></p>
     ${isNew ? `<button class="btn" id="fOk">Agregar</button>` : `<button class="btn" id="fPaid" style="background:var(--green)"></button><div class="row"><button class="btn ghost" id="fOk">Guardar cambios</button><button class="btn danger" id="fDel">Borrar</button></div>`}
     <button class="btn ghost" data-close>Cancelar</button>`, b => {
@@ -949,9 +964,32 @@ function formPlan(p, preset = {}) {
     cat.onchange = () => (catTouched = true);
     desc.oninput = autoCat;
     acct.onchange = amtW.show;
-    const mon = b.querySelector("#fMon");
-    const showDay = () => { b.querySelector("#fDueWrap").hidden = mon.checked; b.querySelector("#fDayWrap").hidden = !mon.checked; };
-    mon.onchange = showDay; showDay();
+    const mon = b.querySelector("#fMon"), cuo = b.querySelector("#fCuo"), cuoN = b.querySelector("#fCuoN"), cuoP = b.querySelector("#fCuoP");
+    let cuoMode = v.cuoMode || "each";
+    // Cuántas cuotas, cuánto cada una y cuándo es la última
+    const cuoInfo = () => {
+      const n = +cuoN.value, paid = +cuoP.value || 0, r = amtW.read();
+      if (!n || !r || r.error) return null;
+      const each = cuoMode === "total" ? round2(r.amount / n) : r.amount;
+      const first = b.querySelector("#fDue").value || dayIn(addMonths(monthKey(todayISO()), 1), +todayISO().slice(8));
+      const last = addMonths(monthKey(first), n - paid - 1), ln = monthName(last);
+      return { n, paid, each, eachUsd: r.usd ? (cuoMode === "total" ? round2(r.usd / n) : r.usd) : null, tax: r.tax, first, txt: `${n} cuotas de ${money(each, planCur())} = ${money(round2(each * n), planCur())} en total.${paid ? ` Te faltan ${n - paid}.` : ""} La última es en ${ln}.` };
+    };
+    const showDay = () => {
+      const c = cuo.checked && kind === "out";
+      b.querySelector("#fCuoWrap").hidden = kind === "in";
+      b.querySelector("#fMonWrap").hidden = c;
+      b.querySelector("#fCuoBox").hidden = !c;
+      b.querySelector("#fDueWrap").hidden = mon.checked && !c;
+      b.querySelector("#fDayWrap").hidden = !mon.checked || c;
+      b.querySelector("#fDueWrap .label").textContent = c ? "Próxima cuota" : "Qué día";
+      b.querySelectorAll("#fCuoMode button").forEach(x => x.setAttribute("aria-pressed", x.dataset.m === cuoMode));
+      const ci = c && cuoInfo(); b.querySelector("#fCuoTxt").textContent = ci ? ci.txt : "";
+    };
+    b.querySelectorAll("#fCuoMode button").forEach(x => (x.onclick = () => { cuoMode = x.dataset.m; showDay(); }));
+    [cuoN, cuoP, b.querySelector("#fAmt"), b.querySelector("#fDue")].forEach(x => x.addEventListener("input", showDay));
+    segs.forEach(x => x.addEventListener("click", showDay));
+    mon.onchange = showDay; cuo.onchange = showDay; showDay();
     const read = () => {
       const r = amtW.read();
       const err = b.querySelector("#fErr");
@@ -959,18 +997,25 @@ function formPlan(p, preset = {}) {
       if (!r) { err.textContent = "Poné un monto"; err.hidden = false; return null; }
       if (r.error) { err.textContent = r.error; err.hidden = false; return null; }
       const amt = r.amount;
+      if (cuo.checked && kind === "out") {
+        const n = +cuoN.value, paid = +cuoP.value || 0;
+        if (!Number.isInteger(n) || n < 2 || n > 72) { err.textContent = "Poné cuántas cuotas (de 2 a 72)"; err.hidden = false; return null; }
+        if (!Number.isInteger(paid) || paid < 0 || paid >= n) { err.textContent = "Las cuotas pagadas tienen que ser menos que el total"; err.hidden = false; return null; }
+        const ci = cuoInfo();
+        return { kind, desc: desc.value.trim(), amount: ci.each, currency: planCur(), usd: ci.eachUsd, tax: ci.eachUsd ? ci.tax : null, due: ci.first, cat: cat.value, accountId: acct.value, monthly: true, cuotas: { n, paid } };
+      }
       let due = b.querySelector("#fDue").value;
       if (mon.checked) {
         const day = +b.querySelector("#fDay").value;
         if (b.querySelector("#fDay").value && (!Number.isInteger(day) || day < 1 || day > 31)) { err.textContent = "El día tiene que ser de 1 a 31"; err.hidden = false; return null; }
         due = day ? nextDue(day, p?.id) : "";
       }
-      return { kind, desc: desc.value.trim(), amount: amt, currency: planCur(), usd: r.usd || null, tax: r.usd ? r.tax : null, due, cat: cat.value, accountId: acct.value, monthly: mon.checked };
+      return { kind, desc: desc.value.trim(), amount: amt, currency: planCur(), usd: r.usd || null, tax: r.usd ? r.tax : null, due, cat: cat.value, accountId: acct.value, monthly: mon.checked, cuotas: null };
     };
     b.querySelector("#fOk").onclick = () => {
       const rec = read(); if (!rec) return;
       if (isNew) db.planned.push({ id: uid(), created: Date.now(), ...rec }); else Object.assign(p, rec);
-      save(); closeSheet(); render(); toast(isNew ? "Agregado" : "Guardado");
+      save(); closeSheet(); render(); toast(rec.cuotas ? `${rec.cuotas.n - rec.cuotas.paid} cuotas de ${money(rec.amount, rec.currency)} anotadas` : isNew ? "Agregado" : "Guardado");
     };
     const paid = b.querySelector("#fPaid");
     if (paid) paid.onclick = () => { const rec = read(); if (!rec) return; Object.assign(p, rec); formPay(p); };
@@ -1134,14 +1179,15 @@ function formPay(p, mk, amount) {
     b.querySelector("#fOk").onclick = () => {
       const amt = parseAmount(b.querySelector("#fAmt").value);
       if (isNaN(amt) || amt <= 0) { const e = b.querySelector("#fErr"); e.textContent = "Poné un monto"; e.hidden = false; return; }
-      db.txs.push({ id: uid(), created: Date.now(), src: "planned", plannedId: p.id, ...(p.groupId ? { groupId: p.groupId } : {}), accountId: b.querySelector("#fAcct").value, amount: inc ? amt : -amt, desc: p.desc, cat: p.cat, date: b.querySelector("#fDate").value || todayISO() });
+      db.txs.push({ id: uid(), created: Date.now(), src: "planned", plannedId: p.id, ...(p.groupId ? { groupId: p.groupId } : {}), accountId: b.querySelector("#fAcct").value, amount: inc ? amt : -amt, desc: p.cuotas ? `${p.desc} (cuota ${p.cuotas.paid + 1} de ${p.cuotas.n})` : p.desc, cat: p.cat, date: b.querySelector("#fDate").value || todayISO() });
       if (p.monthly) {
         // Queda para el mes siguiente al que se cobró o pagó, el día de siempre
         const from = mk || monthKey(p.due || todayISO());
         p.due = dayIn(addMonths(from, 1), +(p.due || todayISO()).slice(8));
         if (p.over) for (const k of Object.keys(p.over)) if (k <= from) delete p.over[k];
+        if (p.cuotas && ++p.cuotas.paid >= p.cuotas.n) db.planned = db.planned.filter(x => x !== p);
       } else db.planned = db.planned.filter(x => x !== p);
-      save(); closeSheet(); render(); toast(inc ? "Cobrado y anotado" : p.groupId ? "Comprado y anotado en Gastos" : "Pagado y anotado en Gastos");
+      save(); closeSheet(); render(); toast(p.cuotas ? (p.cuotas.paid >= p.cuotas.n ? "Pagaste la última cuota" : `Cuota ${p.cuotas.paid} de ${p.cuotas.n} pagada`) : inc ? "Cobrado y anotado" : p.groupId ? "Comprado y anotado en Gastos" : "Pagado y anotado en Gastos");
       const g = p.groupId && groupById(p.groupId);
       if (g) formGroup(g);
     };
@@ -1579,6 +1625,11 @@ document.addEventListener("click", e => {
   else if (d.act === "addAccount") formAccount();
   else if (d.act === "quick") quickAdd();
   else if (d.act === "quickplan") quickPlan();
+  else if (d.act === "quickcuotas") {
+    const acc = acctById(document.getElementById("qAcct")?.value || lastAccount()), qa = quickAmount(acc, document.getElementById("qAmt").value);
+    if (qa?.error) return;
+    formPlan(null, { kind: "out", desc: document.getElementById("qDesc").value.trim(), amount: qa?.amount || "", usd: qa?.usd || null, tax: qa?.tax, accountId: acc?.id, cuotas: { n: "", paid: 0 }, cuoMode: "total" });
+  }
   else if (d.act === "balance") { if (db.accounts.length === 1) formAdjust(db.accounts[0]); else { tab = "cuentas"; render(); document.getElementById("scroll").scrollTop = 0; } }
   else if (d.act === "start") {
     const name = document.getElementById("oName").value.trim() || "Mi cuenta", v = document.getElementById("oBal").value.trim();
