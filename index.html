@@ -637,7 +637,7 @@ function occRow(o) {
   const p = o.p, date = o.date || (o.next ? null : p.due), late = !o.next && date && date < todayISO();
   const when = date ? `<span class="tag ${late ? "late" : isIn(p) ? "done" : ""}">${late ? "vencido " : ""}${shortDate(date)}</span>` : "";
   const left = db.accounts.length && o.mk === monthKey(todayISO()) ? `<span style="color:${o.left < 0 ? "var(--red)" : "var(--green)"};font-weight:600">${o.left < 0 ? "te faltan " + money(-o.left, p.currency) : "te quedan " + money(o.left, p.currency)}</span> · ` : "";
-  return `<button class="item" data-plan="${p.id}" data-mk="${o.mk}"><span class="t">${esc(p.desc)}${when}</span><span class="a num ${isIn(p) ? "in" : "plan"}">${isIn(p) ? "+ " : "− "}${money(Math.abs(o.amount), p.currency)}</span><span class="s">${left}${isIn(p) ? "cobro" : esc(p.cat)}${p.usd ? ` · US$ ${new Intl.NumberFormat("es-AR").format(p.usd)}` : ""}${o.cuota ? ` · cuota ${o.cuota} de ${p.cuotas.n}` : ""}${o.changed ? " · cambiado este mes" : p.monthly && !o.cuota ? " · todos los meses" : ""}</span></button>`;
+  return `<button class="item" data-plan="${p.id}" data-mk="${o.mk}"><span class="t">${esc(p.desc)}${when}</span><span class="a num ${isIn(p) ? "in" : "plan"}">${isIn(p) ? "+ " : "− "}${money(Math.abs(o.amount), p.currency)}</span><span class="s">${left}${isIn(p) ? "cobro" : esc(p.cat)}${p.usd ? ` · US$ ${new Intl.NumberFormat("es-AR").format(p.usd)}` : ""}${o.cuota ? ` · cuota ${o.cuota} de ${p.cuotas.n}${p.cuotas.int ? " con interés" : ""}` : ""}${o.changed ? " · cambiado este mes" : p.monthly && !o.cuota ? " · todos los meses" : ""}</span></button>`;
 }
 const groupsList = () => db.groups || (db.groups = []);
 const groupById = id => groupsList().find(g => g.id === id);
@@ -933,7 +933,7 @@ function formPlan(p, preset = {}) {
     ${!isNew && p.monthly && !p.cuotas ? `<p class="muted small">Cambia todos los meses, menos los que cambiaste aparte.</p>` : ""}
     <div class="seg" id="fKind"><button data-k="out">Voy a pagar</button><button data-k="in">Voy a cobrar</button></div>
     <label class="field"><span class="label">Qué es</span><input type="text" id="fDesc" placeholder="Alquiler, sueldo, service del auto…" value="${esc(v.desc || "")}" maxlength="80"></label>
-    ${amtHTML(v.usd || v.amount || "")}
+    ${amtHTML(v.cuotas?.price || v.usd || v.amount || "")}
     <div class="row">
       <label class="field" id="fDueWrap"><span class="label">Qué día</span><input type="date" id="fDue" value="${v.due || ""}"></label>
       <label class="field" id="fDayWrap"><span class="label">Día de cada mes</span><input type="number" inputmode="numeric" min="1" max="31" id="fDay" value="${v.due ? +v.due.slice(8) : ""}" placeholder="1 a 31"></label>
@@ -944,6 +944,11 @@ function formPlan(p, preset = {}) {
     <label class="check" id="fCuoWrap"><input type="checkbox" id="fCuo" ${v.cuotas ? "checked" : ""}> En cuotas</label>
     <div id="fCuoBox">
       <div class="seg" id="fCuoMode"><button type="button" data-m="each">El monto es de cada cuota</button><button type="button" data-m="total">Es el total</button></div>
+      <div id="fIntWrap" style="margin-top:12px">
+        <div class="seg" id="fIntOn"><button type="button" data-i="0">Sin interés</button><button type="button" data-i="1">Con interés</button></div>
+        <div class="row" id="fIntBox" style="margin-top:12px;align-items:flex-end"><label class="field" style="flex:0 1 120px"><span class="label">Interés %</span><input type="text" inputmode="decimal" id="fIntR" placeholder="Ej. 20" value="${v.cuotas?.int ? new Intl.NumberFormat("es-AR").format(v.cuotas.int.rate) : ""}"></label>
+        <div class="seg" id="fIntKind" style="flex:1"><button type="button" data-k="rec">Recargo total</button><button type="button" data-k="tna">TNA (anual)</button></div></div>
+      </div>
       <div class="row" style="margin-top:12px"><label class="field"><span class="label">Cuántas cuotas</span><input type="number" inputmode="numeric" min="2" max="72" id="fCuoN" value="${v.cuotas?.n || ""}" placeholder="Ej. 6"></label>
       <label class="field"><span class="label">Ya pagaste</span><input type="number" inputmode="numeric" min="0" id="fCuoP" value="${v.cuotas?.paid || 0}"></label></div>
       <p class="muted small" id="fCuoTxt" style="margin-top:8px"></p>
@@ -965,15 +970,27 @@ function formPlan(p, preset = {}) {
     desc.oninput = autoCat;
     acct.onchange = amtW.show;
     const mon = b.querySelector("#fMon"), cuo = b.querySelector("#fCuo"), cuoN = b.querySelector("#fCuoN"), cuoP = b.querySelector("#fCuoP");
-    let cuoMode = v.cuoMode || "each";
+    let cuoMode = v.cuoMode || (v.cuotas?.price ? "total" : "each"), intOn = !!v.cuotas?.int, intKind = v.cuotas?.int?.kind || "rec";
+    // Lo que se paga de más por cuota: recargo sobre el total o tasa anual con cuotas fijas (como las tarjetas)
+    const intFactor = n => {
+      const rate = Math.abs(parseAmount(b.querySelector("#fIntR").value));
+      if (!intOn || cuoMode !== "total" || !rate) return 1;
+      if (intKind === "rec") return 1 + rate / 100;
+      const i = rate / 100 / 12;
+      return n * i / (1 - Math.pow(1 + i, -n));
+    };
     // Cuántas cuotas, cuánto cada una y cuándo es la última
     const cuoInfo = () => {
       const n = +cuoN.value, paid = +cuoP.value || 0, r = amtW.read();
       if (!n || !r || r.error) return null;
-      const each = cuoMode === "total" ? round2(r.amount / n) : r.amount;
+      const f = intFactor(n), each = cuoMode === "total" ? round2(r.amount * f / n) : r.amount;
+      const extra = cuoMode === "total" && f !== 1 ? round2(each * n - r.amount) : 0;
       const first = b.querySelector("#fDue").value || dayIn(addMonths(monthKey(todayISO()), 1), +todayISO().slice(8));
       const last = addMonths(monthKey(first), n - paid - 1), ln = monthName(last);
-      return { n, paid, each, eachUsd: r.usd ? (cuoMode === "total" ? round2(r.usd / n) : r.usd) : null, tax: r.tax, first, txt: `${n} cuotas de ${money(each, planCur())} = ${money(round2(each * n), planCur())} en total.${paid ? ` Te faltan ${n - paid}.` : ""} La última es en ${ln}.` };
+      const rate = Math.abs(parseAmount(b.querySelector("#fIntR").value));
+      return { n, paid, each, eachUsd: r.usd ? (cuoMode === "total" ? round2(r.usd * f / n) : r.usd) : null, tax: r.tax, first,
+        price: cuoMode === "total" ? (r.usd || r.amount) : null, int: extra ? { kind: intKind, rate } : null,
+        txt: `${n} cuotas de ${money(each, planCur())} = ${money(round2(each * n), planCur())} en total${extra ? ` (${money(extra, planCur())} de interés)` : cuoMode === "total" ? ", sin interés" : ""}.${paid ? ` Te faltan ${n - paid}.` : ""} La última es en ${ln}.` };
     };
     const showDay = () => {
       const c = cuo.checked && kind === "out";
@@ -984,9 +1001,16 @@ function formPlan(p, preset = {}) {
       b.querySelector("#fDayWrap").hidden = !mon.checked || c;
       b.querySelector("#fDueWrap .label").textContent = c ? "Próxima cuota" : "Qué día";
       b.querySelectorAll("#fCuoMode button").forEach(x => x.setAttribute("aria-pressed", x.dataset.m === cuoMode));
+      b.querySelector("#fIntWrap").hidden = cuoMode !== "total";
+      b.querySelector("#fIntBox").hidden = !intOn;
+      b.querySelectorAll("#fIntOn button").forEach(x => x.setAttribute("aria-pressed", (x.dataset.i === "1") === intOn));
+      b.querySelectorAll("#fIntKind button").forEach(x => x.setAttribute("aria-pressed", x.dataset.k === intKind));
       const ci = c && cuoInfo(); b.querySelector("#fCuoTxt").textContent = ci ? ci.txt : "";
     };
     b.querySelectorAll("#fCuoMode button").forEach(x => (x.onclick = () => { cuoMode = x.dataset.m; showDay(); }));
+    b.querySelectorAll("#fIntOn button").forEach(x => (x.onclick = () => { intOn = x.dataset.i === "1"; showDay(); if (intOn) b.querySelector("#fIntR").focus(); }));
+    b.querySelectorAll("#fIntKind button").forEach(x => (x.onclick = () => { intKind = x.dataset.k; showDay(); }));
+    b.querySelector("#fIntR").addEventListener("input", showDay);
     [cuoN, cuoP, b.querySelector("#fAmt"), b.querySelector("#fDue")].forEach(x => x.addEventListener("input", showDay));
     segs.forEach(x => x.addEventListener("click", showDay));
     mon.onchange = showDay; cuo.onchange = showDay; showDay();
@@ -1002,7 +1026,8 @@ function formPlan(p, preset = {}) {
         if (!Number.isInteger(n) || n < 2 || n > 72) { err.textContent = "Poné cuántas cuotas (de 2 a 72)"; err.hidden = false; return null; }
         if (!Number.isInteger(paid) || paid < 0 || paid >= n) { err.textContent = "Las cuotas pagadas tienen que ser menos que el total"; err.hidden = false; return null; }
         const ci = cuoInfo();
-        return { kind, desc: desc.value.trim(), amount: ci.each, currency: planCur(), usd: ci.eachUsd, tax: ci.eachUsd ? ci.tax : null, due: ci.first, cat: cat.value, accountId: acct.value, monthly: true, cuotas: { n, paid } };
+        if (intOn && cuoMode === "total" && !ci.int) { err.textContent = "Poné el interés (por ejemplo 20), o elegí Sin interés"; err.hidden = false; return null; }
+        return { kind, desc: desc.value.trim(), amount: ci.each, currency: planCur(), usd: ci.eachUsd, tax: ci.eachUsd ? ci.tax : null, due: ci.first, cat: cat.value, accountId: acct.value, monthly: true, cuotas: { n, paid, ...(ci.price ? { price: ci.price } : {}), ...(ci.int ? { int: ci.int } : {}) } };
       }
       let due = b.querySelector("#fDue").value;
       if (mon.checked) {
