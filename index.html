@@ -925,7 +925,7 @@ function formPlan(p, preset = {}) {
       <div class="seg" id="fCuoMode"><button type="button" data-m="each">El monto es de cada cuota</button><button type="button" data-m="total">Es el total</button></div>
       <div id="fIntWrap" style="margin-top:12px">
         <div class="seg" id="fIntOn"><button type="button" data-i="0">Sin interés</button><button type="button" data-i="1">Con interés</button></div>
-        <div class="row" id="fIntBox" style="margin-top:12px;align-items:flex-end"><label class="field" style="flex:0 1 120px"><span class="label">Interés %</span><input type="text" inputmode="decimal" id="fIntR" placeholder="Ej. 20" value="${v.cuotas?.int ? new Intl.NumberFormat("es-AR").format(v.cuotas.int.rate) : ""}"></label>
+        <div class="row" id="fIntBox" style="margin-top:12px;align-items:flex-end"><label class="field" style="flex:0 1 120px"><span class="label">Interés %</span><input type="text" inputmode="decimal" data-plain id="fIntR" placeholder="Ej. 20" value="${v.cuotas?.int ? new Intl.NumberFormat("es-AR").format(v.cuotas.int.rate) : ""}"></label>
         <div class="seg" id="fIntKind" style="flex:1"><button type="button" data-k="rec">Recargo total</button><button type="button" data-k="tna">TNA (anual)</button></div></div>
       </div>
       <div class="row" style="margin-top:12px"><label class="field"><span class="label">Cuántas cuotas</span><input type="number" inputmode="numeric" min="2" max="72" id="fCuoN" value="${v.cuotas?.n || ""}" placeholder="Ej. 6"></label>
@@ -1680,6 +1680,32 @@ document.addEventListener("click", e => {
   else if (d.act === "backup") backup();
   else if (d.act === "restore") restore();
   else if (d.act === "wipe") wipe();
+});
+// Los montos se escriben con puntos de miles solos: 600000 → 600.000 (los decimales van con coma)
+function fmtTyping(v) {
+  if (/[a-zñ]/i.test(v)) return v; // "600 mil", "3 millones": se deja como está
+  const m = v.match(/^(\s*[+\-−]?\s*\$?\s*)([\d.]*)(,\d*)?$/);
+  if (!m) return v;
+  const digits = m[2].replace(/\./g, "");
+  if (!digits) return v;
+  return m[1] + digits.replace(/\B(?=(\d{3})+(?!\d))/g, ".") + (m[3] || "");
+}
+document.addEventListener("input", e => {
+  const el = e.target;
+  if (el.tagName === "INPUT" && el.inputMode === "decimal" && !el.hasAttribute("data-plain")) {
+    let v = el.value;
+    // Un punto recién escrito al final, sin coma, es la coma de los decimales
+    if (e.data === "." && v.endsWith(".") && !v.includes(",")) v = v.slice(0, -1) + ",";
+    const f = fmtTyping(v);
+    if (f !== el.value) {
+      // El cursor queda en el mismo lugar contando los números que tiene a la derecha
+      const pos = el.selectionStart ?? el.value.length, right = el.value.slice(pos).replace(/[^\d,]/g, "").length;
+      el.value = f;
+      let i = f.length, n = 0;
+      while (i > 0 && n < right) { i--; if (/[\d,]/.test(f[i])) n++; }
+      try { el.setSelectionRange(i, i); } catch {}
+    }
+  }
 });
 document.addEventListener("input", e => {
   if (e.target.id === "qAmt") quickFx();
