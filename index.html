@@ -110,10 +110,11 @@ input[type=date]::-webkit-calendar-picker-indicator{margin-left:auto}
 .cuoli .box{width:24px;height:24px;border-radius:7px;box-shadow:inset 0 0 0 2px var(--line-2);display:grid;place-items:center;font-size:.8rem;font-weight:800;color:#fff;flex:0 0 auto}
 .cuoli.ok .box{background:var(--green);box-shadow:none}
 .cuoli.ok{color:var(--muted)}
-/* Cada cuota: el nombre arriba y abajo, en la misma línea, el cuadradito, la fecha y el monto */
-.cuorow{display:grid;grid-template-columns:auto minmax(0,1fr) 38%;gap:6px 10px;align-items:center}
-.cuorow .cuolab{grid-column:1/-1}
-.cuorow input{height:44px;min-height:44px;padding:0 10px;margin:0}
+/* Cada cuota en una línea, todo centrado: cuadradito, nombre, fecha y monto */
+.cuorow{display:grid;grid-template-columns:30px 3.9em minmax(0,1fr) 30%;gap:6px;align-items:center}
+.cuorow .cuolab{white-space:nowrap;font-size:.92rem}
+@media (max-width:359px){.cuorow{grid-template-columns:30px minmax(0,1fr) 38%}.cuorow .cuolab{display:none}}
+.cuorow input{height:44px;min-height:44px;padding:0 8px;margin:0}
 .cuorow .box{width:30px;height:30px}
 .cuoli:not(.ok) .box{color:var(--muted)}
 .cuoli .tick{width:28px;height:28px;border-radius:8px;font-size:.85rem}
@@ -667,7 +668,7 @@ function formCuotas(p) {
     const paint = () => {
       $("#cList").innerHTML = vals.map((v, k) => {
         const num = k + 1, ok = num <= paid, tx = paidTx(num);
-        return `<div class="cuoli cuorow${ok ? " ok" : ""}"><span class="cuolab">Cuota ${num}${ok ? " · pagada" : ""}</span><span class="box">${ok ? "✓" : num}</span>
+        return `<div class="cuoli cuorow${ok ? " ok" : ""}"><span class="box">${ok ? "✓" : num}</span><span class="cuolab">Cuota ${num}</span>
           ${ok && !tx ? `<span class="muted small">sin fecha</span>` : `<input type="date" data-d="${k}" value="${dates[k] || plainDate(num)}" aria-label="Fecha de la cuota ${num}">`}
           <input type="text" inputmode="decimal" data-k="${k}" value="${fmt(v)}" ${ok && !tx ? "disabled" : ""} aria-label="Monto de la cuota ${num}"></div>`;
       }).join("");
