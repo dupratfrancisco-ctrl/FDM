@@ -145,7 +145,7 @@ nav.tabs button[aria-current=page]{color:var(--ink)}
 .sheet{position:fixed;inset:0;z-index:20;display:flex;align-items:flex-end;justify-content:center;background:rgba(28,38,32,.38)}
 .sheet .panel{background:var(--card);width:100%;max-width:560px;max-height:92vh;overflow-x:hidden;overflow-y:auto;overscroll-behavior:contain;border-radius:20px 20px 0 0;padding:22px max(18px,env(safe-area-inset-right,0px)) calc(22px + env(safe-area-inset-bottom,0px)) max(18px,env(safe-area-inset-left,0px));display:flex;flex-direction:column;gap:16px}
 .sheet h2{font-family:var(--f-display);font-weight:700;font-size:1.4rem}
-.toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(150px + env(safe-area-inset-bottom,0px));background:var(--ink);color:var(--paper);padding:10px 16px;border-radius:10px;font-weight:600;z-index:30;max-width:calc(100vw - 32px);text-align:center}
+.toast{pointer-events:none;position:fixed;left:50%;transform:translateX(-50%);bottom:calc(150px + env(safe-area-inset-bottom,0px));background:var(--ink);color:var(--paper);padding:10px 16px;border-radius:10px;font-weight:600;z-index:30;max-width:calc(100vw - 32px);text-align:center}
 .preview{font-size:.85rem;border:1px solid var(--line);border-radius:10px;padding:4px 10px;max-height:220px;overflow:auto}
 .preview .item{padding:7px 0}
 .preview .dup{opacity:.45}
@@ -557,7 +557,7 @@ function projection(cur) {
       const cuota = p.cuotas ? p.cuotas.paid + i + 1 : null;
       if (cuota && cuota > p.cuotas.n) break;
       const isNext = !nextSet && !ov?.skip; if (isNext) nextSet = true;
-      occ.push({ p, mk, next: i > 0, isNext, cuota, skip: !!ov?.skip, changed: !!ov, date: ov?.day ? dayIn(mk, ov.day) : i === 0 ? first : dayIn(mk, day), amount: (isIn(p) ? 1 : -1) * (ov?.amount ?? p.amount) });
+      occ.push({ p, mk, next: i > 0, isNext, cuota, skip: !!ov?.skip, changed: !!ov, date: ov?.day ? dayIn(mk, ov.day) : i === 0 ? first : dayIn(mk, day), amount: (isIn(p) ? 1 : -1) * (ov?.amount ?? cuotaAmt(p, cuota)) });
       if (!p.monthly) break;
     }
   }
@@ -630,6 +630,73 @@ function monthCard(m, cur, multi, first) {
     <div class="row"><button class="btn ghost small" data-addmonth="${m.mk}">+ Agregar</button><button class="btn ghost small" data-newgroup="${m.mk}">+ Lista</button></div></section>`;
 }
 // Todas las cuotas de cada compra juntas, con su casilla: se tildan y destildan en orden
+function formCuotas(p) {
+  const cur = p.currency, fmt = n => new Intl.NumberFormat("es-AR", { maximumFractionDigits: 2 }).format(n);
+  const paidTx = num => db.txs.find(t => t.plannedId === p.id && t.cuota === num);
+  // Montos actuales de cada cuota: las pagadas, lo que se pagó; las que faltan, lo anotado
+  let vals = Array.from({ length: p.cuotas.n }, (_, k) => { const num = k + 1, tx = paidTx(num); return tx ? Math.abs(tx.amount) : cuotaAmt(p, num); });
+  const base = p.due ? monthKey(p.due) : monthKey(todayISO());
+  openSheet(`<h2>Editar las cuotas</h2>
+    <label class="field"><span class="label">Qué es</span><input type="text" id="cDesc" value="${esc(p.desc)}" maxlength="80"></label>
+    <div class="row"><label class="field" style="flex:0 1 130px"><span class="label">Cuántas cuotas</span><input type="number" inputmode="numeric" min="1" max="72" id="cN" value="${p.cuotas.n}"></label>
+    <label class="field"><span class="label">Precio total</span><input type="text" inputmode="decimal" id="cTot"></label></div>
+    <button class="btn ghost small" id="cSplit" type="button">Repartir el total en cuotas iguales</button>
+    <div class="cuolist" id="cList"></div>
+    <p class="err" id="fErr" hidden></p>
+    <button class="btn" id="cOk">Guardar</button>
+    <button class="btn danger" data-delplan="${p.id}">Borrar la compra en cuotas</button>
+    <button class="btn ghost" data-close>Cancelar</button>`, b => {
+    const $ = id => b.querySelector(id), paid = p.cuotas.paid;
+    const readVals = () => b.querySelectorAll("#cList input").forEach(i => { const v = Math.abs(parseAmount(i.value)); vals[+i.dataset.k] = isNaN(v) ? 0 : v; });
+    const total = () => round2(vals.reduce((a, v) => a + v, 0));
+    const paint = () => {
+      $("#cList").innerHTML = vals.map((v, k) => {
+        const num = k + 1, ok = num <= paid, tx = paidTx(num), mk = ok ? null : addMonths(base, num - paid - 1);
+        return `<div class="cuoli${ok ? " ok" : ""}"><span class="box">${ok ? "✓" : num}</span><span style="flex:1;min-width:0">Cuota ${num}${tx ? ` · pagada el ${shortDate(tx.date)}` : ok ? " · pagada" : ` · ${MONTHS[+mk.slice(5) - 1]}`}</span><input type="text" inputmode="decimal" data-k="${k}" value="${fmt(v)}" style="flex:0 0 42%;min-height:40px;padding:8px 10px" ${ok && !tx ? "disabled" : ""} aria-label="Monto de la cuota ${num}"></div>`;
+      }).join("");
+      $("#cTot").value = fmt(total());
+    };
+    paint();
+    $("#cList").addEventListener("input", () => { readVals(); $("#cTot").value = fmt(total()); });
+    // La lista se acomoda mientras se escribe la cantidad (no al salir del campo, así no se mueve el botón Guardar)
+    const setN = n => {
+      if (n === vals.length) return;
+      readVals();
+      const fill = vals[vals.length - 1] || p.amount;
+      vals = Array.from({ length: n }, (_, k) => vals[k] ?? fill);
+      paint();
+    };
+    $("#cN").addEventListener("input", () => { const n = Math.round(+$("#cN").value); if (n >= paid + 1 && n <= 72) setN(n); });
+    $("#cN").addEventListener("change", () => { const n = Math.round(+$("#cN").value); if (!(n >= paid + 1 && n <= 72)) $("#cN").value = vals.length; });
+    $("#cSplit").onclick = () => {
+      readVals();
+      const tot = Math.abs(parseAmount($("#cTot").value)), paidSum = vals.slice(0, paid).reduce((a, v) => a + v, 0), left = vals.length - paid;
+      const err = $("#fErr");
+      if (!tot || tot <= paidSum) { err.textContent = "Poné un total más grande que lo que ya pagaste"; err.hidden = false; return; }
+      err.hidden = true;
+      const each = Math.floor((tot - paidSum) / left * 100) / 100;
+      for (let k = paid; k < vals.length; k++) vals[k] = each;
+      vals[vals.length - 1] = round2(tot - paidSum - each * (left - 1)); // lo que sobra del redondeo va en la última
+      paint();
+    };
+    $("#cOk").onclick = () => {
+      readVals();
+      const desc = $("#cDesc").value.trim(), err = $("#fErr");
+      if (!desc) { err.textContent = "Escribí qué es"; err.hidden = false; return; }
+      if (vals.slice(paid).some(v => !v)) { err.textContent = "Cada cuota tiene que tener un monto"; err.hidden = false; return; }
+      p.desc = desc; p.cuotas.n = vals.length;
+      p.cuotas.amts = {};
+      vals.forEach((v, k) => {
+        const num = k + 1, tx = paidTx(num);
+        if (tx) { tx.amount = -v; tx.desc = `${desc} (cuota ${num} de ${vals.length})`; }
+        if (num > paid) p.cuotas.amts[num] = v;
+      });
+      p.amount = vals[paid];
+      delete p.usd; delete p.cuotas.int; p.cuotas.price = total();
+      save(); closeSheet(); render(); toast(`${desc}: ${vals.length} cuotas, ${money(total(), cur)} en total`);
+    };
+  });
+}
 function deletePlan(id) {
   const p = db.planned.find(x => x.id === id) || db.txs.find(t => t.plannedId === id && t.snap)?.snap;
   if (!p) return;
@@ -648,13 +715,13 @@ function cuotasCard() {
   if (!buys.length) return "";
   const row = ({ p, paid, done }) => {
     const n = p.cuotas.n, last = lastCuotaTx(p.id), base = p.due ? monthKey(p.due) : now;
-    return `<div class="cuogrp"><div class="cardhead"><b>${esc(p.desc)}</b><span class="muted small">${done ? "terminada" : `${paid} de ${n} pagadas`}<button class="edit" style="color:var(--red)" data-delplan="${p.id}">Borrar</button></span></div>
+    return `<div class="cuogrp"><div class="cardhead"><b>${esc(p.desc)}</b><span class="muted small">${done ? "terminada" : `${paid} de ${n} pagadas`}${done ? "" : `<button class="edit" data-editcuo="${p.id}">Editar</button>`}<button class="edit" style="color:var(--red)" data-delplan="${p.id}">Borrar</button></span></div>
       <div class="cuolist">${Array.from({ length: n }, (_, k) => {
         const num = k + 1, ok = num <= paid, tx = db.txs.find(t => t.plannedId === p.id && t.cuota === num);
         const mk = ok ? null : addMonths(base, num - paid - 1), mn = mk ? MONTHS[+mk.slice(5) - 1] : "";
         const btn = ok ? (tx && tx === last && num === paid ? `<button class="tick on" data-untick="${tx.id}" aria-label="Destildar la cuota ${num}">✓</button>` : `<button class="tick on" disabled>✓</button>`)
           : num === paid + 1 && !done ? `<button class="tick" data-tick="${p.id}" aria-label="Tildar la cuota ${num} como pagada"></button>` : `<button class="tick" disabled></button>`;
-        return `<div class="cuoli${ok ? " ok" : ""}">${btn}<span>Cuota ${num}${mn ? ` · ${mn}` : ""}${tx ? ` · pagada el ${shortDate(tx.date)}` : ok ? " · pagada" : ` · ${money(p.amount, p.currency)}`}</span></div>`;
+        return `<div class="cuoli${ok ? " ok" : ""}">${btn}<span>Cuota ${num}${mn ? ` · ${mn}` : ""}${tx ? ` · pagada el ${shortDate(tx.date)}` : ok ? " · pagada" : ` · ${money(cuotaAmt(p, num), p.currency)}`}</span></div>`;
       }).join("")}</div></div>`;
   };
   return `<section class="card"><h2>Cuotas</h2><p class="muted small">Tildá cada cuota cuando la pagás. Si te equivocaste, tocá el último ✓ para destildarla.</p>${buys.map(row).join("")}</section>`;
@@ -1151,7 +1218,7 @@ function formMonth(p, mk) {
     <p class="err" id="fErr" hidden></p>
     <button class="btn" id="fOk">Guardar para ${mes.toLowerCase()}</button>
     ${occ[0] === o ? `<button class="btn" id="fPaid" style="background:var(--green)">${inc ? "Ya lo cobré" : "Ya lo pagué"}</button>` : ""}
-    <div class="row"><button class="btn ghost small" id="fAll">Cambiar todos los meses</button>${o.skip ? "" : `<button class="btn ghost small" id="fSkip">No va en ${mes.toLowerCase()}</button>`}</div>
+    <div class="row"><button class="btn ghost small" id="fAll">${p.cuotas ? "Editar las cuotas" : "Cambiar todos los meses"}</button>${o.skip ? "" : `<button class="btn ghost small" id="fSkip">No va en ${mes.toLowerCase()}</button>`}</div>
     ${ov ? `<button class="btn ghost small" id="fReset">Volver a lo de todos los meses (${money(p.amount, p.currency)})</button>` : ""}
     <button class="btn danger" data-delplan="${p.id}">${p.cuotas ? "Borrar la compra en cuotas" : "Borrar de todos los meses"}</button>
     <button class="btn ghost" data-close>Cancelar</button>`, b => {
@@ -1164,13 +1231,17 @@ function formMonth(p, mk) {
     b.querySelector("#fOk").onclick = () => {
       const r = read(); if (!r) return;
       p.over = p.over || {};
-      if (r.amt === p.amount && r.d === +(p.due || todayISO()).slice(8)) delete p.over[mk];
+      if (o.cuota) {
+        // En cuotas, el monto es de esa cuota (aunque se pague otro mes); el día sí es de este mes
+        p.cuotas.amts = { ...(p.cuotas.amts || {}), [o.cuota]: r.amt };
+        if (r.d === +(p.due || todayISO()).slice(8)) delete p.over[mk]; else p.over[mk] = { day: r.d };
+      } else if (r.amt === p.amount && r.d === +(p.due || todayISO()).slice(8)) delete p.over[mk];
       else p.over[mk] = { amount: r.amt, day: r.d };
       save(); closeSheet(); render(); toast(`Cambiado solo para ${mes.toLowerCase()}`);
     };
     const paid = b.querySelector("#fPaid");
     if (paid) paid.onclick = () => { const r = read(); if (r) formPay(p, mk, r.amt); };
-    b.querySelector("#fAll").onclick = () => formPlan(p);
+    b.querySelector("#fAll").onclick = () => p.cuotas ? formCuotas(p) : formPlan(p);
     const skip = b.querySelector("#fSkip");
     if (skip) skip.onclick = () => { p.over = p.over || {}; p.over[mk] = { skip: true }; save(); closeSheet(); render(); toast(`Sacado de ${mes.toLowerCase()}`); };
     const reset = b.querySelector("#fReset");
@@ -1179,6 +1250,8 @@ function formMonth(p, mk) {
 }
 
 // Cobra o paga algo planeado: queda como movimiento y, si se repite o es en cuotas, pasa al mes siguiente
+// Lo que vale una cuota (cada una puede tener su monto) o, si no es en cuotas, el monto de siempre
+const cuotaAmt = (p, num) => (num && p.cuotas?.amts?.[num]) ?? p.amount;
 function payPlanned(p, mk, amt, accountId, date) {
   const inc = isIn(p), snap = JSON.parse(JSON.stringify(p));
   const t = { id: uid(), created: Date.now(), src: "planned", plannedId: p.id, ...(p.groupId ? { groupId: p.groupId } : {}), accountId, amount: inc ? amt : -amt, desc: p.cuotas ? `${p.desc} (cuota ${p.cuotas.paid + 1} de ${p.cuotas.n})` : p.desc, cat: p.cat, date };
@@ -1637,6 +1710,7 @@ document.addEventListener("click", e => {
   else if (d.tx) formTx(db.txs.find(t => t.id === d.tx));
   else if (d.carry) formCarry(d.carry, d.cur || "ARS");
   else if (d.delplan) deletePlan(d.delplan);
+  else if (d.editcuo) { const p = db.planned.find(x => x.id === d.editcuo); if (p) formCuotas(p); }
   else if (d.tick) { const p = db.planned.find(x => x.id === d.tick); if (p) { closeSheet(); tickCuota(p); } }
   else if (d.untick) untickCuota(db.txs.find(x => x.id === d.untick));
   else if (d.qtax) { qTax = d.qtax === "1"; db.fxTax = qTax; save(); quickFx(); }
