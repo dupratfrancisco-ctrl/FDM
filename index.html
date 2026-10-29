@@ -110,6 +110,9 @@ input[type=date]::-webkit-calendar-picker-indicator{margin-left:auto}
 .cuoli .box{width:24px;height:24px;border-radius:7px;box-shadow:inset 0 0 0 2px var(--line-2);display:grid;place-items:center;font-size:.8rem;font-weight:800;color:#fff;flex:0 0 auto}
 .cuoli.ok .box{background:var(--green);box-shadow:none}
 .cuoli.ok{color:var(--muted)}
+.cuoli .tick{width:28px;height:28px;border-radius:8px;font-size:.85rem}
+.cuogrp{display:flex;flex-direction:column;gap:10px}
+.cuogrp+.cuogrp{border-top:1px solid var(--line);padding-top:16px}
 .item:first-child{border-top:0}
 .item .t{font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .item .s{font-size:.82rem;color:var(--muted);grid-column:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -626,12 +629,32 @@ function monthCard(m, cur, multi, first) {
     ${m.items.length || m.done.length ? `<div class="list">${m.done.map(doneRow).join("")}${groupRows(m.items)}</div>` : `<p class="muted small">Nada anotado para este mes.</p>`}
     <div class="row"><button class="btn ghost small" data-addmonth="${m.mk}">+ Agregar</button><button class="btn ghost small" data-newgroup="${m.mk}">+ Lista</button></div></section>`;
 }
+// Todas las cuotas de cada compra juntas, con su casilla: se tildan y destildan en orden
+function cuotasCard() {
+  const now = monthKey(todayISO());
+  const buys = db.planned.filter(p => p.cuotas).map(p => ({ p, paid: p.cuotas.paid }));
+  // Las que se terminaron de pagar este mes siguen a la vista, para poder destildar la última
+  for (const t of db.txs) if (t.snap && t.cuota === t.snap.cuotas.n && monthKey(t.date) === now && !db.planned.some(x => x.id === t.plannedId) && lastCuotaTx(t.plannedId) === t) buys.push({ p: t.snap, paid: t.snap.cuotas.n, done: true });
+  if (!buys.length) return "";
+  const row = ({ p, paid, done }) => {
+    const n = p.cuotas.n, last = lastCuotaTx(p.id), base = p.due ? monthKey(p.due) : now;
+    return `<div class="cuogrp"><div class="cardhead"><b>${esc(p.desc)}</b><span class="muted small">${done ? "terminada" : `${paid} de ${n} pagadas`}</span></div>
+      <div class="cuolist">${Array.from({ length: n }, (_, k) => {
+        const num = k + 1, ok = num <= paid, tx = db.txs.find(t => t.plannedId === p.id && t.cuota === num);
+        const mk = ok ? null : addMonths(base, num - paid - 1), mn = mk ? MONTHS[+mk.slice(5) - 1] : "";
+        const btn = ok ? (tx && tx === last && num === paid ? `<button class="tick on" data-untick="${tx.id}" aria-label="Destildar la cuota ${num}">✓</button>` : `<button class="tick on" disabled>✓</button>`)
+          : num === paid + 1 && !done ? `<button class="tick" data-tick="${p.id}" aria-label="Tildar la cuota ${num} como pagada"></button>` : `<button class="tick" disabled></button>`;
+        return `<div class="cuoli${ok ? " ok" : ""}">${btn}<span>Cuota ${num}${mn ? ` · ${mn}` : ""}${tx ? ` · pagada el ${shortDate(tx.date)}` : ok ? " · pagada" : ` · ${money(p.amount, p.currency)}`}</span></div>`;
+      }).join("")}</div></div>`;
+  };
+  return `<section class="card"><h2>Cuotas</h2><p class="muted small">Tildá cada cuota cuando la pagás. Si te equivocaste, tocá el último ✓ para destildarla.</p>${buys.map(row).join("")}</section>`;
+}
 function viewPlaneados() {
   const now = monthKey(todayISO());
   const curs = currencies().filter(c => db.planned.some(p => p.currency === c) || db.txs.some(t => t.src === "planned" && monthKey(t.date) === now && curOf(t) === c));
   let html = `<section class="card"><h2>Mes por mes</h2><p class="muted small">Lo que vas a cobrar y pagar en cada mes. Tocá uno para cambiar el monto o el día, o para marcarlo como cobrado o pagado.</p>
     ${db.planned.some(isIn) ? "" : `<button class="btn ghost small" data-act="addIncome">Agregar lo que cobrás todos los meses</button>`}
-    <button class="btn ghost small" data-newgroup="">+ Lista de gastos (mudanza, viaje, cumple…)</button></section>`;
+    <button class="btn ghost small" data-newgroup="">+ Lista de gastos (mudanza, viaje, cumple…)</button></section>` + cuotasCard();
   if (!curs.length) return html + `<section class="card"><p class="empty">No tenés nada anotado. Tocá <b>+</b> para agregar algo que vas a pagar o cobrar.</p></section>`;
   let lastMk = monthKey(todayISO());
   for (const cur of curs) projection(cur).forEach((m, i) => { html += monthCard(m, cur, curs.length > 1, i === 0); if (m.mk > lastMk) lastMk = m.mk; });
