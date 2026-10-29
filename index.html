@@ -114,7 +114,8 @@ input[type=date]::-webkit-calendar-picker-indicator{margin-left:auto}
 .cuorow{display:grid;grid-template-columns:30px 3.9em minmax(0,1fr) 30%;gap:6px;align-items:center}
 .cuorow .cuolab{white-space:nowrap;font-size:.92rem}
 @media (max-width:359px){.cuorow{grid-template-columns:30px minmax(0,1fr) 38%}.cuorow .cuolab{display:none}}
-.cuorow input{height:44px;min-height:44px;padding:0 8px;margin:0}
+/* Mismo alto para fecha y monto; el texto queda en el medio por el relleno (en el iPhone, sin relleno la fecha quedaba arriba) */
+.cuorow input{height:44px;min-height:44px;padding:10px 8px;margin:0;line-height:20px}
 .cuorow .box{width:30px;height:30px}
 .cuoli:not(.ok) .box{color:var(--muted)}
 .cuoli .tick{width:28px;height:28px;border-radius:8px;font-size:.85rem}
