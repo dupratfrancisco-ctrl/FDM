@@ -630,6 +630,16 @@ function monthCard(m, cur, multi, first) {
     <div class="row"><button class="btn ghost small" data-addmonth="${m.mk}">+ Agregar</button><button class="btn ghost small" data-newgroup="${m.mk}">+ Lista</button></div></section>`;
 }
 // Todas las cuotas de cada compra juntas, con su casilla: se tildan y destildan en orden
+function deletePlan(id) {
+  const p = db.planned.find(x => x.id === id) || db.txs.find(t => t.plannedId === id && t.snap)?.snap;
+  if (!p) return;
+  const paid = db.txs.filter(t => t.plannedId === id && t.cuota);
+  if (!confirm(p.cuotas ? `¿Borrar ${p.desc} en cuotas?` : p.monthly ? `¿Borrar ${p.desc} de todos los meses?` : `¿Borrar ${p.desc}?`)) return;
+  if (paid.length && confirm(`¿Borrar también ${paid.length === 1 ? "la cuota que tildaste como pagada" : `las ${paid.length} cuotas que tildaste como pagadas`}? La plata vuelve a tu saldo. Si tocás Cancelar, quedan en tus gastos.`)) db.txs = db.txs.filter(t => !paid.includes(t));
+  else for (const t of paid) delete t.snap; // ya no se pueden destildar: la compra no existe más
+  db.planned = db.planned.filter(x => x.id !== id);
+  save(); closeSheet(); render(); toast(`${p.desc} borrado`);
+}
 function cuotasCard() {
   const now = monthKey(todayISO());
   const buys = db.planned.filter(p => p.cuotas).map(p => ({ p, paid: p.cuotas.paid }));
@@ -638,7 +648,7 @@ function cuotasCard() {
   if (!buys.length) return "";
   const row = ({ p, paid, done }) => {
     const n = p.cuotas.n, last = lastCuotaTx(p.id), base = p.due ? monthKey(p.due) : now;
-    return `<div class="cuogrp"><div class="cardhead"><b>${esc(p.desc)}</b><span class="muted small">${done ? "terminada" : `${paid} de ${n} pagadas`}</span></div>
+    return `<div class="cuogrp"><div class="cardhead"><b>${esc(p.desc)}</b><span class="muted small">${done ? "terminada" : `${paid} de ${n} pagadas`}<button class="edit" style="color:var(--red)" data-delplan="${p.id}">Borrar</button></span></div>
       <div class="cuolist">${Array.from({ length: n }, (_, k) => {
         const num = k + 1, ok = num <= paid, tx = db.txs.find(t => t.plannedId === p.id && t.cuota === num);
         const mk = ok ? null : addMonths(base, num - paid - 1), mn = mk ? MONTHS[+mk.slice(5) - 1] : "";
@@ -1024,7 +1034,7 @@ function formPlan(p, preset = {}) {
     const paid = b.querySelector("#fPaid");
     if (paid) paid.onclick = () => { const rec = read(); if (!rec) return; Object.assign(p, rec); formPay(p); };
     const del = b.querySelector("#fDel");
-    if (del) del.onclick = () => { if (!confirm(p.monthly ? "¿Borrarlo de todos los meses?" : "¿Borrarlo?")) return; db.planned = db.planned.filter(x => x !== p); save(); closeSheet(); render(); };
+    if (del) del.onclick = () => deletePlan(p.id);
   });
 }
 
@@ -1143,6 +1153,7 @@ function formMonth(p, mk) {
     ${occ[0] === o ? `<button class="btn" id="fPaid" style="background:var(--green)">${inc ? "Ya lo cobré" : "Ya lo pagué"}</button>` : ""}
     <div class="row"><button class="btn ghost small" id="fAll">Cambiar todos los meses</button>${o.skip ? "" : `<button class="btn ghost small" id="fSkip">No va en ${mes.toLowerCase()}</button>`}</div>
     ${ov ? `<button class="btn ghost small" id="fReset">Volver a lo de todos los meses (${money(p.amount, p.currency)})</button>` : ""}
+    <button class="btn danger" data-delplan="${p.id}">${p.cuotas ? "Borrar la compra en cuotas" : "Borrar de todos los meses"}</button>
     <button class="btn ghost" data-close>Cancelar</button>`, b => {
     const read = () => {
       const amt = parseAmount(b.querySelector("#fAmt").value), d = +b.querySelector("#fDay").value, err = b.querySelector("#fErr");
@@ -1625,6 +1636,7 @@ document.addEventListener("click", e => {
   else if ("close" in d) closeSheet();
   else if (d.tx) formTx(db.txs.find(t => t.id === d.tx));
   else if (d.carry) formCarry(d.carry, d.cur || "ARS");
+  else if (d.delplan) deletePlan(d.delplan);
   else if (d.tick) { const p = db.planned.find(x => x.id === d.tick); if (p) { closeSheet(); tickCuota(p); } }
   else if (d.untick) untickCuota(db.txs.find(x => x.id === d.untick));
   else if (d.qtax) { qTax = d.qtax === "1"; db.fxTax = qTax; save(); quickFx(); }
