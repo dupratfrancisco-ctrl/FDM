@@ -97,6 +97,19 @@ input[type=date]::-webkit-calendar-picker-indicator{margin-left:auto}
 /* Listas */
 .list{display:flex;flex-direction:column}
 .item{display:grid;grid-template-columns:1fr auto;gap:4px 14px;padding:15px 0;border-top:1px solid var(--line);align-items:center;text-align:left;width:100%;border-radius:0}
+/* Cuotas con casilla para tildar */
+.item.cuo{grid-template-columns:auto minmax(0,1fr) auto;gap:4px 12px}
+.item.cuo .cuob{display:flex;flex-direction:column;gap:4px;text-align:left;min-width:0;padding:0;border-radius:0}
+.item.cuo .a{grid-row:auto;grid-column:3}
+.item.cuo .s{white-space:normal}
+.tick{width:32px;height:32px;border-radius:9px;background:var(--card);box-shadow:inset 0 0 0 2px var(--line-2);display:grid;place-items:center;font-weight:800;font-size:1rem;color:#fff;flex:0 0 auto;padding:0}
+.tick.on{background:var(--green);box-shadow:none}
+.tick:disabled{opacity:.35}
+.cuolist{display:flex;flex-direction:column;gap:8px}
+.cuoli{display:flex;align-items:center;gap:10px;font-size:.95rem}
+.cuoli .box{width:24px;height:24px;border-radius:7px;box-shadow:inset 0 0 0 2px var(--line-2);display:grid;place-items:center;font-size:.8rem;font-weight:800;color:#fff;flex:0 0 auto}
+.cuoli.ok .box{background:var(--green);box-shadow:none}
+.cuoli.ok{color:var(--muted)}
 .item:first-child{border-top:0}
 .item .t{font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .item .s{font-size:.82rem;color:var(--muted);grid-column:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -533,14 +546,15 @@ function projection(cur) {
   for (const p of mine) {
     const first = p.due && p.due >= today ? p.due : null;
     const day = +(p.due || today).slice(8);
-    let mk = first ? monthKey(first) : p.mk && p.mk > now ? p.mk : now;
+    let mk = first ? monthKey(first) : p.mk && p.mk > now ? p.mk : now, nextSet = false;
     for (let i = 0; mk <= last; i++, mk = addMonths(mk, 1)) {
       // Un mes puede tener su propio monto o día, o no ir ese mes
       const ov = p.monthly && p.over?.[mk];
       // En cuotas: cada mes es la cuota siguiente, hasta la última
       const cuota = p.cuotas ? p.cuotas.paid + i + 1 : null;
       if (cuota && cuota > p.cuotas.n) break;
-      occ.push({ p, mk, next: i > 0, cuota, skip: !!ov?.skip, changed: !!ov, date: ov?.day ? dayIn(mk, ov.day) : i === 0 ? first : dayIn(mk, day), amount: (isIn(p) ? 1 : -1) * (ov?.amount ?? p.amount) });
+      const isNext = !nextSet && !ov?.skip; if (isNext) nextSet = true;
+      occ.push({ p, mk, next: i > 0, isNext, cuota, skip: !!ov?.skip, changed: !!ov, date: ov?.day ? dayIn(mk, ov.day) : i === 0 ? first : dayIn(mk, day), amount: (isIn(p) ? 1 : -1) * (ov?.amount ?? p.amount) });
       if (!p.monthly) break;
     }
   }
@@ -572,6 +586,7 @@ function occRow(o) {
   const p = o.p, date = o.date || (o.next ? null : p.due), late = !o.next && date && date < todayISO();
   const when = date ? `<span class="tag ${late ? "late" : isIn(p) ? "done" : ""}">${late ? "vencido " : ""}${shortDate(date)}</span>` : "";
   const left = db.accounts.length && o.mk === monthKey(todayISO()) ? `<span style="color:${o.left < 0 ? "var(--red)" : "var(--green)"};font-weight:600">${o.left < 0 ? "te faltan " + money(-o.left, p.currency) : "te quedan " + money(o.left, p.currency)}</span> · ` : "";
+  if (o.cuota) return `<div class="item cuo"><button class="tick" data-tick="${p.id}" ${o.isNext ? "" : "disabled"} aria-label="Tildar la cuota ${o.cuota} como pagada"></button><button class="cuob" data-plan="${p.id}" data-mk="${o.mk}"><span class="t">${esc(p.desc)}${when}</span><span class="s">${left}cuota ${o.cuota} de ${p.cuotas.n}${p.cuotas.int ? " con interés" : ""}${p.usd ? ` · US$ ${new Intl.NumberFormat("es-AR").format(p.usd)}` : ""}${o.changed ? " · cambiado este mes" : ""}</span></button><span class="a num plan">− ${money(Math.abs(o.amount), p.currency)}</span></div>`;
   return `<button class="item" data-plan="${p.id}" data-mk="${o.mk}"><span class="t">${esc(p.desc)}${when}</span><span class="a num ${isIn(p) ? "in" : "plan"}">${isIn(p) ? "+ " : "− "}${money(Math.abs(o.amount), p.currency)}</span><span class="s">${left}${isIn(p) ? "cobro" : esc(p.cat)}${p.usd ? ` · US$ ${new Intl.NumberFormat("es-AR").format(p.usd)}` : ""}${o.cuota ? ` · cuota ${o.cuota} de ${p.cuotas.n}${p.cuotas.int ? " con interés" : ""}` : ""}${o.changed ? " · cambiado este mes" : p.monthly && !o.cuota ? " · todos los meses" : ""}</span></button>`;
 }
 const groupsList = () => db.groups || (db.groups = []);
@@ -592,7 +607,8 @@ function groupRow(r) {
   const left = db.accounts.length && r.mk === monthKey(todayISO()) ? `<span style="color:${r.left < 0 ? "var(--red)" : "var(--green)"};font-weight:600">${r.left < 0 ? "te faltan " + money(-r.left, r.cur) : "te quedan " + money(r.left, r.cur)}</span> · ` : "";
   return `<button class="item" data-group="${r.g.id}"><span class="t">${esc(r.g.name)}<span class="tag">lista · ${r.n} ${r.n === 1 ? "cosa" : "cosas"}</span></span><span class="a num plan">− ${money(r.sum, r.cur)}</span><span class="s">${left}tocá para ver la lista</span></button>`;
 }
-const doneRow = t => `<button class="item" data-tx="${t.id}"><span class="t">${esc(t.desc)} <span class="tag done">✓ ${t.amount > 0 ? "cobrado" : "pagado"} el ${shortDate(t.date)}</span></span><span class="a num ${t.amount > 0 ? "in" : "out"}">${t.amount > 0 ? "+ " : "− "}${money(Math.abs(t.amount), curOf(t))}</span><span class="s">${esc(t.cat)} · ya está en tu saldo</span></button>`;
+const lastCuotaTx = id => db.txs.filter(x => x.plannedId === id && x.cuota).sort((a, b) => b.cuota - a.cuota)[0];
+const doneRow = t => t.cuota ? `<div class="item cuo"><button class="tick on" ${lastCuotaTx(t.plannedId) === t ? `data-untick="${t.id}" aria-label="Destildar: la cuota ${t.cuota} no está pagada"` : "disabled"}>✓</button><button class="cuob" data-tx="${t.id}"><span class="t">${esc(t.desc.replace(/ \(cuota \d+ de \d+\)$/, ""))}</span><span class="s">${esc((t.desc.match(/cuota \d+ de \d+/) || [""])[0])} · pagada el ${shortDate(t.date)}</span></button><span class="a num out">− ${money(Math.abs(t.amount), curOf(t))}</span></div>` : `<button class="item" data-tx="${t.id}"><span class="t">${esc(t.desc)} <span class="tag done">✓ ${t.amount > 0 ? "cobrado" : "pagado"} el ${shortDate(t.date)}</span></span><span class="a num ${t.amount > 0 ? "in" : "out"}">${t.amount > 0 ? "+ " : "− "}${money(Math.abs(t.amount), curOf(t))}</span><span class="s">${esc(t.cat)} · ya está en tu saldo</span></button>`;
 function monthCard(m, cur, multi, first) {
   const name = monthName(m.mk), prev = MONTHS[+addMonths(m.mk, -1).slice(5) - 1];
   const sum = first
@@ -611,7 +627,8 @@ function monthCard(m, cur, multi, first) {
     <div class="row"><button class="btn ghost small" data-addmonth="${m.mk}">+ Agregar</button><button class="btn ghost small" data-newgroup="${m.mk}">+ Lista</button></div></section>`;
 }
 function viewPlaneados() {
-  const curs = currencies().filter(c => db.planned.some(p => p.currency === c));
+  const now = monthKey(todayISO());
+  const curs = currencies().filter(c => db.planned.some(p => p.currency === c) || db.txs.some(t => t.src === "planned" && monthKey(t.date) === now && curOf(t) === c));
   let html = `<section class="card"><h2>Mes por mes</h2><p class="muted small">Lo que vas a cobrar y pagar en cada mes. Tocá uno para cambiar el monto o el día, o para marcarlo como cobrado o pagado.</p>
     ${db.planned.some(isIn) ? "" : `<button class="btn ghost small" data-act="addIncome">Agregar lo que cobrás todos los meses</button>`}
     <button class="btn ghost small" data-newgroup="">+ Lista de gastos (mudanza, viaje, cumple…)</button></section>`;
@@ -865,6 +882,10 @@ function formPlan(p, preset = {}) {
   const v = p || preset;
   let kind = v.kind === "in" ? "in" : "out";
   openSheet(`<h2>${isNew ? "Para más adelante" : p.cuotas ? "Editar las cuotas" : p.monthly ? "Editar todos los meses" : "Editar"}</h2>
+    ${!isNew && p.cuotas ? `<div class="cuolist">${Array.from({ length: p.cuotas.n }, (_, k) => {
+      const num = k + 1, ok = num <= p.cuotas.paid, tx = db.txs.find(t => t.plannedId === p.id && t.cuota === num);
+      return `<div class="cuoli${ok ? " ok" : ""}"><span class="box">${ok ? "✓" : ""}</span>Cuota ${num}${tx ? ` · pagada el ${shortDate(tx.date)}` : ok ? " · pagada" : ""}</div>`;
+    }).join("")}</div><button class="btn ghost small" data-tick="${p.id}" type="button">Tildar la cuota ${p.cuotas.paid + 1} como pagada</button>` : ""}
     ${!isNew && p.monthly && !p.cuotas ? `<p class="muted small">Cambia todos los meses, menos los que cambiaste aparte.</p>` : ""}
     <div class="seg" id="fKind"><button data-k="out">Voy a pagar</button><button data-k="in">Voy a cobrar</button></div>
     <label class="field"><span class="label">Qué es</span><input type="text" id="fDesc" placeholder="Alquiler, sueldo, service del auto…" value="${esc(v.desc || "")}" maxlength="80"></label>
@@ -1123,6 +1144,38 @@ function formMonth(p, mk) {
   });
 }
 
+// Cobra o paga algo planeado: queda como movimiento y, si se repite o es en cuotas, pasa al mes siguiente
+function payPlanned(p, mk, amt, accountId, date) {
+  const inc = isIn(p), snap = JSON.parse(JSON.stringify(p));
+  const t = { id: uid(), created: Date.now(), src: "planned", plannedId: p.id, ...(p.groupId ? { groupId: p.groupId } : {}), accountId, amount: inc ? amt : -amt, desc: p.cuotas ? `${p.desc} (cuota ${p.cuotas.paid + 1} de ${p.cuotas.n})` : p.desc, cat: p.cat, date };
+  if (p.cuotas) { t.cuota = p.cuotas.paid + 1; t.snap = snap; }
+  db.txs.push(t);
+  if (p.monthly) {
+    // Queda para el mes siguiente al que se cobró o pagó, el día de siempre
+    const from = mk || monthKey(p.due || todayISO());
+    p.due = dayIn(addMonths(from, 1), +(p.due || todayISO()).slice(8));
+    if (p.over) for (const k of Object.keys(p.over)) if (k <= from) delete p.over[k];
+    if (p.cuotas && ++p.cuotas.paid >= p.cuotas.n) db.planned = db.planned.filter(x => x !== p);
+  } else db.planned = db.planned.filter(x => x !== p);
+}
+// Tildar la próxima cuota: se paga con el monto de ese mes, hoy, desde la cuenta de la compra
+function tickCuota(p) {
+  const o = projection(p.currency).flatMap(m => m.items).find(x => x.p === p && x.isNext);
+  if (!o) return;
+  const acc = acctById(p.accountId)?.currency === p.currency ? p.accountId : db.accounts.find(a => a.currency === p.currency)?.id;
+  if (!acc) { toast(`No tenés cuentas en ${p.currency}`); return; }
+  payPlanned(p, o.mk, Math.abs(o.amount), acc, todayISO());
+  save(); render();
+  toast(p.cuotas.paid >= p.cuotas.n ? `${p.desc}: pagaste la última cuota` : `${p.desc}: cuota ${p.cuotas.paid} de ${p.cuotas.n} pagada`);
+}
+// Destildar la última cuota pagada: se borra el gasto y vuelve a quedar pendiente
+function untickCuota(t) {
+  if (!t?.snap) return;
+  const i = db.planned.findIndex(x => x.id === t.plannedId);
+  if (i >= 0) db.planned[i] = t.snap; else db.planned.push(t.snap);
+  db.txs = db.txs.filter(x => x !== t);
+  save(); render(); toast(`Cuota ${t.cuota} de nuevo sin pagar`);
+}
 function formPay(p, mk, amount) {
   const options = db.accounts.filter(a => a.currency === p.currency);
   if (!options.length) { toast(`No tenés cuentas en ${p.currency}`); return; }
@@ -1139,14 +1192,7 @@ function formPay(p, mk, amount) {
     b.querySelector("#fOk").onclick = () => {
       const amt = parseAmount(b.querySelector("#fAmt").value);
       if (isNaN(amt) || amt <= 0) { const e = b.querySelector("#fErr"); e.textContent = "Poné un monto"; e.hidden = false; return; }
-      db.txs.push({ id: uid(), created: Date.now(), src: "planned", plannedId: p.id, ...(p.groupId ? { groupId: p.groupId } : {}), accountId: b.querySelector("#fAcct").value, amount: inc ? amt : -amt, desc: p.cuotas ? `${p.desc} (cuota ${p.cuotas.paid + 1} de ${p.cuotas.n})` : p.desc, cat: p.cat, date: b.querySelector("#fDate").value || todayISO() });
-      if (p.monthly) {
-        // Queda para el mes siguiente al que se cobró o pagó, el día de siempre
-        const from = mk || monthKey(p.due || todayISO());
-        p.due = dayIn(addMonths(from, 1), +(p.due || todayISO()).slice(8));
-        if (p.over) for (const k of Object.keys(p.over)) if (k <= from) delete p.over[k];
-        if (p.cuotas && ++p.cuotas.paid >= p.cuotas.n) db.planned = db.planned.filter(x => x !== p);
-      } else db.planned = db.planned.filter(x => x !== p);
+      payPlanned(p, mk, amt, b.querySelector("#fAcct").value, b.querySelector("#fDate").value || todayISO());
       save(); closeSheet(); render(); toast(p.cuotas ? (p.cuotas.paid >= p.cuotas.n ? "Pagaste la última cuota" : `Cuota ${p.cuotas.paid} de ${p.cuotas.n} pagada`) : inc ? "Cobrado y anotado" : p.groupId ? "Comprado y anotado en Gastos" : "Pagado y anotado en Gastos");
       const g = p.groupId && groupById(p.groupId);
       if (g) formGroup(g);
@@ -1556,6 +1602,8 @@ document.addEventListener("click", e => {
   else if ("close" in d) closeSheet();
   else if (d.tx) formTx(db.txs.find(t => t.id === d.tx));
   else if (d.carry) formCarry(d.carry, d.cur || "ARS");
+  else if (d.tick) { const p = db.planned.find(x => x.id === d.tick); if (p) { closeSheet(); tickCuota(p); } }
+  else if (d.untick) untickCuota(db.txs.find(x => x.id === d.untick));
   else if (d.qtax) { qTax = d.qtax === "1"; db.fxTax = qTax; save(); quickFx(); }
   else if (d.act === "qcur") { qCur = qCur === "USD" ? "ARS" : "USD"; el.textContent = qCur === "USD" ? "US$" : "$"; el.classList.toggle("usd", qCur === "USD"); quickFx(); document.getElementById("qAmt").focus(); }
   else if (d.act === "fxload") { el.disabled = true; el.textContent = "Buscando…"; fetchFx().then(ok => { if (!ok) { render(); toast("No pude ver la cotización. ¿Tenés internet?"); } else toast("Dólar actualizado"); }); }
