@@ -1,5 +1,5 @@
 // Guarda la app para que abra rápido y sin señal; los datos quedan en el celular.
-const CACHE = "fdm-v27";
+const CACHE = "fdm-v28";
 const SHELL = ["./", "index.html", "manifest.webmanifest", "pdf.min.js", "pdf.worker.min.js", "icons/apple-touch-icon-negro.png", "icons/icon-192-negro.png", "icons/icon-512-negro.png"];
 
 self.addEventListener("install", e => {
